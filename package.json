@@ -1,0 +1,46 @@
+{
+  "name": "interactive-router",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "generate-circuit": "tsx scripts/generateCircuitJson.ts"
+  },
+  "dependencies": {
+    "@flatten-js/core": "^1.6.10",
+    "@tscircuit/capacity-autorouter": "^0.0.385",
+    "@tscircuit/circuit-json-util": "^0.0.90",
+    "@tscircuit/math-utils": "^0.0.36",
+    "@tscircuit/solver-utils": "^0.0.19",
+    "box2d3-wasm": "^5.2.0",
+    "calculate-packing": "^0.0.71",
+    "cdt2d": "^1.0.0",
+    "circuit-json": "^0.0.406",
+    "circuit-json-to-connectivity-map": "^0.0.23",
+    "connectivity-map": "^1.0.0",
+    "fast-json-stable-stringify": "^2.1.0",
+    "flatbush": "^4.5.1",
+    "graphics-debug": "^0.0.89",
+    "object-hash": "^3.0.0",
+    "rbush": "^4.0.1",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "transformation-matrix": "^3.1.0",
+    "zod": "^4.3.6",
+    "zustand": "^5.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.4.1",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.17",
+    "tsx": "^4.19.2",
+    "typescript": "~5.7.2",
+    "vite": "^6.0.7"
+  }
+}
