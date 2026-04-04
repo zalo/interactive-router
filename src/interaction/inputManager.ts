@@ -1,4 +1,4 @@
-import { useAppStore, getWorldPadPosition } from "../state/store"
+import { useAppStore } from "../state/store"
 import { screenToWorld, type CanvasContext } from "../canvas/renderer"
 import {
   type CameraState,
@@ -17,7 +17,6 @@ export interface InputState {
   longPressTimer: number | null
   longPressTriggered: boolean
   canvasRect: DOMRect | null
-  // Pending tap for touch — deferred to distinguish from pinch-zoom
   pendingTap: {
     worldPos: Point
     pointerId: number
@@ -33,23 +32,16 @@ function hitTestComponent(
   components: Map<string, ComponentData>,
   placements: Map<string, PlacementState>,
 ): string | null {
-  // Test in reverse order (top-most first)
   const entries = Array.from(components.entries()).reverse()
   for (const [id, comp] of entries) {
     const placement = placements.get(id)
     if (!placement) continue
-
-    // Transform point into component's local space
     const dx = worldPoint.x - placement.x
     const dy = worldPoint.y - placement.y
     const rad = (-placement.rotation * Math.PI) / 180
     const localX = dx * Math.cos(rad) - dy * Math.sin(rad)
     const localY = dx * Math.sin(rad) + dy * Math.cos(rad)
-
-    if (
-      Math.abs(localX) <= comp.width / 2 &&
-      Math.abs(localY) <= comp.height / 2
-    ) {
+    if (Math.abs(localX) <= comp.width / 2 && Math.abs(localY) <= comp.height / 2) {
       return id
     }
   }
@@ -60,9 +52,6 @@ export function setupInputHandlers(
   canvas: HTMLCanvasElement,
   inputState: InputState,
   getCC: () => CanvasContext,
-  onPhysicsDrag?: (componentId: string, worldX: number, worldY: number) => void,
-  onPhysicsDragEnd?: (componentId: string) => void,
-  onPhysicsRotate?: (componentId: string, rotation: number) => void,
 ): () => void {
   const store = useAppStore.getState
   const { setCamera, setDragState, setHoveredComponent, toggleFrozen, updatePlacement } = useAppStore.getState()
@@ -71,6 +60,19 @@ export function setupInputHandlers(
     const cc = getCC()
     const rect = canvas.getBoundingClientRect()
     return screenToWorld(cc, e.clientX - rect.left, e.clientY - rect.top)
+  }
+
+  function startComponentDrag(e: PointerEvent, hitId: string) {
+    const s = store()
+    const placement = s.placements.get(hitId)!
+    const world = getWorldPos(e)
+    canvas.setPointerCapture(e.pointerId)
+    setDragState({
+      componentId: hitId,
+      offsetX: world.x - placement.x,
+      offsetY: world.y - placement.y,
+      pointerId: e.pointerId,
+    })
   }
 
   function onPointerDown(e: PointerEvent) {
@@ -94,54 +96,33 @@ export function setupInputHandlers(
       return
     }
 
-    // Left button: mode-dependent interaction
     if (e.button === 0 || e.button === 2) {
       const s = store()
+      const world = getWorldPos(e)
 
-      // Interactive mode: routing OR dragging depending on click target
+      // Right-click: context menu actions
+      if (e.button === 2) {
+        if (s.mode === "interactive") {
+          handleRoutingPointerDown(world, 2, getCC)
+        } else {
+          // Placement: toggle frozen
+          const hitId = hitTestComponent(world, s.components, s.placements)
+          if (hitId) toggleFrozen(hitId)
+        }
+        return
+      }
+
+      // Left click: try component drag first (works in all modes)
+      const hitId = hitTestComponent(world, s.components, s.placements)
+      if (hitId) {
+        startComponentDrag(e, hitId)
+        return
+      }
+
+      // No component hit — routing in interactive mode
       if (s.mode === "interactive") {
-        const world = getWorldPos(e)
-
-        // Right-click: delete trace
-        if (e.button === 2) {
-          handleRoutingPointerDown(world, e.button, getCC)
-          return
-        }
-
-        // Component drag (works immediately for both mouse and touch)
-        const hitId = hitTestComponent(world, s.components, s.placements)
-        if (hitId) {
-          const placement = s.placements.get(hitId)!
-          canvas.setPointerCapture(e.pointerId)
-          setDragState({
-            componentId: hitId,
-            offsetX: world.x - placement.x,
-            offsetY: world.y - placement.y,
-            pointerId: e.pointerId,
-          })
-
-          // Long-press on component in edit mode = delete traces for this component
-          inputState.longPressTriggered = false
-          inputState.longPressTimer = window.setTimeout(() => {
-            inputState.longPressTriggered = true
-            // Delete all traces connected to this component
-            const st = store()
-            const newTraces = new Map(st.routedTraces)
-            const newUnrouted = new Set(st.unroutedConnectionIds)
-            for (const conn of st.connections) {
-              if (conn.endpoints.some((ep: any) => ep.componentId === hitId) && newTraces.has(conn.id)) {
-                newTraces.delete(conn.id)
-                newUnrouted.add(conn.id)
-              }
-            }
-            st.setRoutedTraces(newTraces, newUnrouted)
-          }, 500)
-          return
-        }
-
-        // No component hit — routing action.
-        // On touch, defer to distinguish from pinch-zoom start.
         if (e.pointerType === "touch") {
+          // Defer tap to distinguish from pinch
           inputState.pendingTap = {
             worldPos: world,
             pointerId: e.pointerId,
@@ -149,7 +130,6 @@ export function setupInputHandlers(
             startScreenX: e.clientX,
             startScreenY: e.clientY,
           }
-          // If no second finger arrives within 150ms, treat as tap
           if (inputState.pendingTapTimer) clearTimeout(inputState.pendingTapTimer)
           inputState.pendingTapTimer = window.setTimeout(() => {
             if (inputState.pendingTap && inputState.camera.pointers.size < 2) {
@@ -158,41 +138,8 @@ export function setupInputHandlers(
             inputState.pendingTap = null
             inputState.pendingTapTimer = null
           }, 150)
-          return
-        }
-
-        // Mouse: act immediately
-        handleRoutingPointerDown(world, e.button, getCC)
-        return
-      }
-
-      if (s.mode !== "placement") return
-      if (e.button === 2) return // right-click handled by contextmenu
-
-      const world = getWorldPos(e)
-      const hitId = hitTestComponent(world, s.components, s.placements)
-
-      if (hitId) {
-        const placement = s.placements.get(hitId)!
-        canvas.setPointerCapture(e.pointerId)
-        setDragState({
-          componentId: hitId,
-          offsetX: world.x - placement.x,
-          offsetY: world.y - placement.y,
-          pointerId: e.pointerId,
-        })
-
-        // Start long-press timer for freeze toggle
-        inputState.longPressTriggered = false
-        inputState.longPressTimer = window.setTimeout(() => {
-          inputState.longPressTriggered = true
-          toggleFrozen(hitId)
-        }, 500)
-
-        // Notify physics of drag start (only if physics enabled)
-        const s2 = store()
-        if (s2.physicsEnabled) {
-          onPhysicsDrag?.(hitId, world.x, world.y)
+        } else {
+          handleRoutingPointerDown(world, 0, getCC)
         }
       }
     }
@@ -201,69 +148,45 @@ export function setupInputHandlers(
   function onPointerMove(e: PointerEvent) {
     inputState.camera.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
 
-    // Pinch
     if (inputState.camera.pointers.size >= 2 && inputState.canvasRect) {
+      if (inputState.pendingTap) {
+        inputState.pendingTap = null
+        if (inputState.pendingTapTimer) { clearTimeout(inputState.pendingTapTimer); inputState.pendingTapTimer = null }
+      }
       handlePinchUpdate(inputState.camera, setCamera, inputState.canvasRect)
       return
     }
 
-    // Pan
     handlePanMove(e, inputState.camera, setCamera)
 
     const s = store()
-
-    // Interactive mode: handle drag OR routing preview
-    if (s.mode === "interactive") {
-      const dragState = s.dragState
-      if (dragState.componentId && dragState.pointerId === e.pointerId) {
-        // Cancel long-press timer on move (don't delete traces just because we dragged)
-        if (inputState.longPressTimer) {
-          clearTimeout(inputState.longPressTimer)
-          inputState.longPressTimer = null
-        }
-        // Dragging a component in interactive mode — direct position update
-        const world = getWorldPos(e)
-        const newX = world.x - dragState.offsetX
-        const newY = world.y - dragState.offsetY
-        updatePlacement(dragState.componentId, { x: newX, y: newY })
-      } else {
-        // Not dragging — update live routing preview
-        const world = getWorldPos(e)
-        livePreviewRef.path = handleRoutingPointerMove(world)
-      }
-      return
-    }
-
-    if (s.mode !== "placement") return
-
-    // Drag
     const dragState = s.dragState
+
+    // Component drag — direct position update in any mode
     if (dragState.componentId && dragState.pointerId === e.pointerId) {
-      // Cancel long-press if moved enough
       if (inputState.longPressTimer) {
         clearTimeout(inputState.longPressTimer)
         inputState.longPressTimer = null
       }
-
       const world = getWorldPos(e)
+      const newX = world.x - dragState.offsetX
+      const newY = world.y - dragState.offsetY
+      updatePlacement(dragState.componentId, { x: newX, y: newY })
+      return
+    }
 
-      // If physics is enabled, update the drag force target.
-      // If physics is off, directly update the store position.
-      const s2 = store()
-      if (s2.physicsEnabled) {
-        onPhysicsDrag?.(dragState.componentId, world.x, world.y)
-      } else {
-        const newX = world.x - dragState.offsetX
-        const newY = world.y - dragState.offsetY
-        updatePlacement(dragState.componentId, { x: newX, y: newY })
-      }
-    } else {
-      // Hover detection
+    // Interactive routing: live preview
+    if (s.mode === "interactive") {
       const world = getWorldPos(e)
-      const hitId = hitTestComponent(world, s.components, s.placements)
-      if (hitId !== s.hoveredComponentId) {
-        setHoveredComponent(hitId)
-      }
+      livePreviewRef.path = handleRoutingPointerMove(world)
+      return
+    }
+
+    // Hover detection
+    const world = getWorldPos(e)
+    const hitId = hitTestComponent(world, s.components, s.placements)
+    if (hitId !== s.hoveredComponentId) {
+      setHoveredComponent(hitId)
     }
   }
 
@@ -277,7 +200,6 @@ export function setupInputHandlers(
 
     handlePanEnd(e, inputState.camera)
 
-    // Clear long-press
     if (inputState.longPressTimer) {
       clearTimeout(inputState.longPressTimer)
       inputState.longPressTimer = null
@@ -285,7 +207,6 @@ export function setupInputHandlers(
 
     const s = store()
     if (s.dragState.componentId && s.dragState.pointerId === e.pointerId) {
-      onPhysicsDragEnd?.(s.dragState.componentId)
       setDragState({ componentId: null, offsetX: 0, offsetY: 0, pointerId: null })
     }
 
@@ -294,8 +215,7 @@ export function setupInputHandlers(
 
   function onWheel(e: WheelEvent) {
     const s = store()
-
-    // If dragging, scroll wheel rotates component
+    // Scroll wheel on dragged component = rotate 45 degrees
     if (s.dragState.componentId) {
       e.preventDefault()
       const comp = s.placements.get(s.dragState.componentId)
@@ -303,25 +223,14 @@ export function setupInputHandlers(
         const delta = e.deltaY > 0 ? -45 : 45
         const newRotation = ((comp.rotation + delta) % 360 + 360) % 360
         updatePlacement(s.dragState.componentId, { rotation: newRotation })
-        onPhysicsRotate?.(s.dragState.componentId, newRotation)
       }
       return
     }
-
-    // Otherwise zoom
     handleWheelZoom(e, inputState.camera, setCamera)
   }
 
   function onContextMenu(e: MouseEvent) {
     e.preventDefault()
-    const s = store()
-    if (s.mode !== "placement") return
-
-    const world = getWorldPos(e as any)
-    const hitId = hitTestComponent(world, s.components, s.placements)
-    if (hitId) {
-      toggleFrozen(hitId)
-    }
   }
 
   canvas.addEventListener("pointerdown", onPointerDown)
@@ -330,8 +239,6 @@ export function setupInputHandlers(
   canvas.addEventListener("pointercancel", onPointerUp)
   canvas.addEventListener("wheel", onWheel, { passive: false })
   canvas.addEventListener("contextmenu", onContextMenu)
-
-  // Prevent default touch behaviors (scroll, zoom)
   canvas.style.touchAction = "none"
 
   return () => {

@@ -58,9 +58,6 @@ export interface AppState {
 
   // Settings
   componentMargin: number // mm of padding around components for trace routing
-  physicsEnabled: boolean // whether spring forces + collisions are active
-  freeRotationEnabled: boolean // whether footprints can freely rotate to optimal angle
-  ropesEnabled: boolean // whether routed traces become physical ropes
 
   // Loading
   initialized: boolean
@@ -80,9 +77,6 @@ export interface AppState {
   setActiveRoute: (route: ActiveRoute | null) => void
   setAutorouterProgress: (progress: number) => void
   setComponentMargin: (margin: number) => void
-  setPhysicsEnabled: (enabled: boolean) => void
-  setFreeRotationEnabled: (enabled: boolean) => void
-  setRopesEnabled: (enabled: boolean) => void
   randomizePlacements: () => void
   resetToAutoPlacement: () => void
   recomputeMetrics: () => void
@@ -302,9 +296,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   hoveredComponentId: null,
   autoPlacedPlacements: new Map(),
   componentMargin: 1.5,
-  physicsEnabled: false,
-  freeRotationEnabled: false,
-  ropesEnabled: false,
   initialized: false,
   autorouterProgress: 0,
   placementVersion: 0,
@@ -381,9 +372,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   setActiveRoute: (route) => set({ activeRoute: route }),
   setAutorouterProgress: (progress) => set({ autorouterProgress: progress }),
   setComponentMargin: (margin) => set({ componentMargin: margin }),
-  setPhysicsEnabled: (enabled) => set({ physicsEnabled: enabled }),
-  setFreeRotationEnabled: (enabled) => set({ freeRotationEnabled: enabled }),
-  setRopesEnabled: (enabled) => set({ ropesEnabled: enabled }),
 
   randomizePlacements() {
     const s = get()

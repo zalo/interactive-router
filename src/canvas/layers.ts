@@ -4,7 +4,7 @@ import type { CanvasContext } from "./renderer"
 import type { Point, PlacementState, ComponentData } from "../types"
 import { livePreviewRef } from "../types"
 import { getLiveState } from "../pathfinding/livePathfinder"
-import { meshDebug } from "../pathfinding/meshManager"
+// Debug overlay removed in simplified branch
 
 // Color palette
 const COLORS = {
@@ -321,29 +321,7 @@ export function renderInteractivePreview(ctx: CanvasRenderingContext2D, cc: Canv
 }
 
 export function renderOverlay(ctx: CanvasRenderingContext2D, cc: CanvasContext, state: AppState) {
-  // Mode indicator
   ctx.save()
-  const modeLabels: Record<string, string> = {
-    placement: "PLACEMENT",
-    autorouting: "AUTO-ROUTING",
-    interactive: "INTERACTIVE ROUTING",
-    export: "EXPORT",
-  }
-
-  // Top-left mode badge
-  ctx.fillStyle = "rgba(26, 26, 46, 0.85)"
-  ctx.beginPath()
-  ctx.roundRect(12, 12, 180, 32, 6)
-  ctx.fill()
-  ctx.strokeStyle = "#3a3a5c"
-  ctx.lineWidth = 1
-  ctx.stroke()
-
-  ctx.font = "bold 13px 'Inter', system-ui, sans-serif"
-  ctx.fillStyle = "#b0b0d0"
-  ctx.textAlign = "left"
-  ctx.textBaseline = "middle"
-  ctx.fillText(modeLabels[state.mode] || state.mode.toUpperCase(), 22, 28)
 
   // Metrics panel (bottom-left)
   const m = state.metrics
@@ -369,36 +347,6 @@ export function renderOverlay(ctx: CanvasRenderingContext2D, cc: CanvasContext, 
     ctx.fillStyle = i === 0 ? "#c0c0e0" : "#808098"
     ctx.fillText(line, 22, panelY + 18 + i * 18)
   })
-
-  // Debug info (top-left, below mode badge) — show during drag OR if there's an error
-  if ((state.dragState.componentId && state.routedTraces.size > 0) || meshDebug.lastError) {
-    ctx.font = "10px 'Inter', system-ui, sans-serif"
-    ctx.fillStyle = "#f0c040"
-    ctx.textAlign = "left"
-    const traceKeys = [...state.routedTraces.keys()].slice(0, 4).join(", ")
-    const connIds = state.connections.filter(c =>
-      c.endpoints.some((ep: any) => ep.componentId === state.dragState.componentId)
-    ).map(c => c.id).slice(0, 4).join(", ")
-    const dbgY = 55 + 40 // offset below top bar
-    if (state.dragState.componentId) {
-      ctx.fillText(`Dragging: ${state.dragState.componentId.slice(0, 20)}`, 22, dbgY)
-      ctx.fillText(`Trace keys: ${traceKeys}...`, 22, dbgY + 12)
-      ctx.fillText(`Conn IDs for comp: ${connIds}...`, 22, dbgY + 24)
-      const matchCount = state.connections.filter(c => state.routedTraces.has(c.id) && c.endpoints.some((ep: any) => ep.componentId === state.dragState.componentId)).length
-      ctx.fillText(`Matching routed: ${matchCount} | Mesh obs: ${meshDebug.lastMeshObstacles}`, 22, dbgY + 36)
-      ctx.fillText(`Reroute: ${meshDebug.lastRerouteSuccesses}/${meshDebug.lastRerouteAttempts} frame=${meshDebug.frameCount}`, 22, dbgY + 48)
-    }
-    if (meshDebug.lastError) {
-      ctx.fillStyle = "#ff6060"
-      ctx.font = "9px 'Inter', system-ui, sans-serif"
-      const err = meshDebug.lastError
-      let y = dbgY + 60
-      for (let i = 0; i < err.length; i += 55) {
-        ctx.fillText(err.slice(i, i + 55), 22, y)
-        y += 11
-      }
-    }
-  }
 
   // Autorouter progress
   if (state.mode === "autorouting" && state.autorouterProgress > 0) {

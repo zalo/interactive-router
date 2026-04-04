@@ -15,7 +15,6 @@
     "@tscircuit/circuit-json-util": "^0.0.90",
     "@tscircuit/math-utils": "^0.0.36",
     "@tscircuit/solver-utils": "^0.0.19",
-    "box2d3-wasm": "^5.2.0",
     "calculate-packing": "^0.0.71",
     "cdt2d": "^1.0.0",
     "circuit-json": "^0.0.406",

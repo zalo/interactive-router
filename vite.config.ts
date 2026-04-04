@@ -14,19 +14,7 @@ export default defineConfig({
       { find: /^lib\/(.*)/, replacement: path.resolve(autorouterRoot, "lib/$1") },
     ],
   },
-  optimizeDeps: {
-    exclude: ["box2d3-wasm"],
-  },
   build: {
     target: "esnext",
-  },
-  worker: {
-    format: "es",
-  },
-  server: {
-    headers: {
-      "Cross-Origin-Opener-Policy": "same-origin",
-      "Cross-Origin-Embedder-Policy": "require-corp",
-    },
   },
 })
