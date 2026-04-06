@@ -1,17 +1,40 @@
 /**
- * Per-layer navigation mesh manager for interactive routing.
- * Uses CDT mesh EXCLUSION (not obstacle toggling) — rebuilds the mesh
- * for each query, excluding the start/end pad obstacles so the pathfinder
- * can reach them. Other routed traces remain as obstacles.
+ * Simplified mesh manager: builds ONE navigation mesh from pad obstacles only,
+ * then routes all connections via Polyanya with no regard for trace overlap.
+ *
+ * On component move → rebake CDT from pad footprints → merge convex regions → route all traces.
  */
 
 import type { ComponentData, PlacementState, RoutedTrace, BoardData, Point, ConnectionData } from "../types"
-import { cdtTriangulate, rectToPolygon } from "../lib/polyanya/index"
+import { cdtTriangulate } from "../lib/polyanya/index"
 import { buildMeshFromRegions } from "../lib/polyanya/index"
 import { mergeMesh } from "../lib/polyanya/index"
 import { SearchInstance } from "../lib/polyanya/index"
+import { getWorldPadPosition } from "../state/store"
 
 const PAD_CLEARANCE = 0.15 // mm clearance around pads
+
+/** Create a rotated rectangle polygon (4 corners CCW) */
+function rotatedRectPolygon(
+  cx: number, cy: number, w: number, h: number,
+  rotation: number, clearance: number,
+): { x: number; y: number }[] {
+  const hw = w / 2 + clearance
+  const hh = h / 2 + clearance
+  const cos = Math.cos(rotation)
+  const sin = Math.sin(rotation)
+  // Local corners, then rotate + translate
+  const corners = [
+    { lx: -hw, ly: -hh },
+    { lx:  hw, ly: -hh },
+    { lx:  hw, ly:  hh },
+    { lx: -hw, ly:  hh },
+  ]
+  return corners.map(({ lx, ly }) => ({
+    x: cx + lx * cos - ly * sin,
+    y: cy + lx * sin + ly * cos,
+  }))
+}
 
 export const meshDebug = {
   lastMeshObstacles: 0,
@@ -27,7 +50,7 @@ export const meshDebug = {
 }
 
 export function invalidateAllMeshes() {}
-export function invalidateLayerMesh(layer: string) {}
+export function invalidateLayerMesh(_layer: string) {}
 
 /** Force build a mesh for debug viewing */
 export function buildDebugMesh(
@@ -35,9 +58,9 @@ export function buildDebugMesh(
   board: BoardData,
   components: Map<string, ComponentData>,
   placements: Map<string, PlacementState>,
-  routedTraces: Map<string, RoutedTrace>,
+  _routedTraces: Map<string, RoutedTrace>,
 ) {
-  const { mesh, obstacles } = buildMeshForLayer(layer, board, components, placements, routedTraces, new Set())
+  const { mesh, obstacles } = buildPadOnlyMesh(layer, board, components, placements, new Set())
   if (mesh) {
     meshDebug.lastObstaclePolygons = obstacles
     meshDebug.lastMeshPolygons = mesh.polygons.map((poly: any) => ({
@@ -52,17 +75,15 @@ export function buildDebugMesh(
 }
 
 /**
- * Build a navigation mesh for a layer, excluding specific pad IDs.
- * Returns both the mesh and the obstacle list (for debug rendering).
+ * Build a navigation mesh from pad obstacles only — no trace corridors.
+ * Excludes specific pad IDs so the pathfinder can reach start/end points.
  */
-function buildMeshForLayer(
+function buildPadOnlyMesh(
   layer: string,
   board: BoardData,
   components: Map<string, ComponentData>,
   placements: Map<string, PlacementState>,
-  routedTraces: Map<string, RoutedTrace>,
   excludePadIds: Set<string>,
-  excludeConnectionId?: string,
 ): { mesh: any; obstacles: Array<{ x: number; y: number }[]> } {
   const halfW = board.width / 2
   const halfH = board.height / 2
@@ -70,7 +91,7 @@ function buildMeshForLayer(
 
   const obstacles: Array<{ x: number; y: number }[]> = []
 
-  // Add pad obstacles on this layer (excluding specified pads)
+  // Only pad obstacles — no trace corridors, with proper rotation
   for (const [compId, comp] of components) {
     const placement = placements.get(compId)
     if (!placement) continue
@@ -85,24 +106,12 @@ function buildMeshForLayer(
       const padLayers = pad.layers || [pad.layer]
       if (!padLayers.includes(layer)) continue
 
+      // World position of pad center (rotated by component rotation)
       const wx = placement.x + pad.localX * cos - pad.localY * sin
       const wy = placement.y + pad.localX * sin + pad.localY * cos
 
-      obstacles.push(rectToPolygon(wx, wy, pad.width, pad.height, PAD_CLEARANCE))
-    }
-  }
-
-  // Add routed trace segments as obstacles (excluding the connection being rerouted).
-  // Use proper oriented polygons (not bounding boxes).
-  for (const [connId, trace] of routedTraces) {
-    if (connId === excludeConnectionId) continue
-
-    for (const seg of trace.segments) {
-      if (seg.layer !== layer) continue
-      if (seg.points.length < 2) continue
-
-      const tracePolys = pathToObstaclePolygons(seg.points, seg.width / 2 + PAD_CLEARANCE)
-      obstacles.push(...tracePolys)
+      // Rotated pad obstacle — inherits component rotation
+      obstacles.push(rotatedRectPolygon(wx, wy, pad.width, pad.height, rad, PAD_CLEARANCE))
     }
   }
 
@@ -119,49 +128,7 @@ function buildMeshForLayer(
 }
 
 /**
- * Convert a polyline path into oriented obstacle polygons (proper corridors).
- * Same approach as the autorouter's pathToObstaclePolygons.
- */
-function pathToObstaclePolygons(path: Point[], clearance: number): Array<{ x: number; y: number }[]> {
-  if (path.length < 2) return []
-
-  // Deduplicate
-  const pts: Point[] = [path[0]!]
-  for (let i = 1; i < path.length; i++) {
-    const prev = pts[pts.length - 1]!
-    const cur = path[i]!
-    if (Math.abs(cur.x - prev.x) > 1e-9 || Math.abs(cur.y - prev.y) > 1e-9) {
-      pts.push(cur)
-    }
-  }
-  if (pts.length < 2) return []
-
-  // For each segment, create an oriented rectangle (corridor)
-  const polys: Array<{ x: number; y: number }[]> = []
-  for (let i = 0; i < pts.length - 1; i++) {
-    const a = pts[i]!
-    const b = pts[i + 1]!
-    const dx = b.x - a.x
-    const dy = b.y - a.y
-    const len = Math.hypot(dx, dy)
-    if (len < 1e-9) continue
-
-    const nx = -dy / len * clearance
-    const ny = dx / len * clearance
-
-    polys.push([
-      { x: a.x + nx, y: a.y + ny },
-      { x: b.x + nx, y: b.y + ny },
-      { x: b.x - nx, y: b.y - ny },
-      { x: a.x - nx, y: a.y - ny },
-    ])
-  }
-  return polys
-}
-
-/**
- * Find a path between two points, building a fresh CDT mesh with
- * the start/end pads excluded from obstacles.
+ * Find a path between two points on a pad-only mesh.
  */
 export function findPath(
   layer: string,
@@ -174,10 +141,9 @@ export function findPath(
   excludeConnectionId?: string,
   excludePadIds?: string[],
 ): Point[] | null {
-  const { mesh } = buildMeshForLayer(
-    layer, board, components, placements, routedTraces,
+  const { mesh } = buildPadOnlyMesh(
+    layer, board, components, placements,
     new Set(excludePadIds || []),
-    excludeConnectionId,
   )
   if (!mesh) return null
 
@@ -197,86 +163,111 @@ export function findPath(
 }
 
 /**
- * Reroute all traces connected to a specific component.
- * For each trace, builds a fresh CDT mesh excluding:
- * - The start/end pads of that connection
- * - The connection's own trace (but keeps all other traces as obstacles)
+ * Route ALL connections on a single pad-only mesh.
+ * Builds one CDT per layer from pad footprints, then runs Polyanya for every connection.
+ * No trace obstacles, no incremental rebuilds — just pure shortest paths.
  */
-export function rerouteComponentTraces(
-  componentId: string,
+export function routeAllTraces(
   board: BoardData,
   components: Map<string, ComponentData>,
   placements: Map<string, PlacementState>,
   connections: ConnectionData[],
-  routedTraces: Map<string, RoutedTrace>,
-): Map<string, RoutedTrace> | null {
-  let updatedTraces: Map<string, RoutedTrace> | null = null
-  let rerouteCount = 0
-  let successCount = 0
+): { traces: Map<string, RoutedTrace>; unrouted: Set<string> } {
+  const traces = new Map<string, RoutedTrace>()
+  const unrouted = new Set<string>()
   meshDebug.lastError = ""
   meshDebug.frameCount++
 
+  // Cache meshes per layer so we only build once per layer
+  const meshCache = new Map<string, any>()
+
+  function getMesh(layer: string, excludePadIds: Set<string>): any {
+    // Build a mesh excluding the connection's own pads so pathfinder can reach them
+    // Cache key includes excluded pads since different connections exclude different pads
+    const cacheKey = `${layer}:${[...excludePadIds].sort().join(",")}`
+    if (meshCache.has(cacheKey)) return meshCache.get(cacheKey)
+
+    const { mesh } = buildPadOnlyMesh(layer, board, components, placements, excludePadIds)
+    meshCache.set(cacheKey, mesh)
+    return mesh
+  }
+
+  let attempts = 0
+  let successes = 0
+
   for (const conn of connections) {
-    const touchesComponent = conn.endpoints.some((ep: any) => ep.componentId === componentId)
-    if (!touchesComponent) continue
+    if (conn.endpoints.length < 2) {
+      unrouted.add(conn.id)
+      continue
+    }
 
-    const existingTrace = routedTraces.get(conn.id)
-    if (!existingTrace) continue
-    rerouteCount++
+    attempts++
 
-    if (conn.endpoints.length < 2) continue
     const ep1 = conn.endpoints[0]!
     const ep2 = conn.endpoints[conn.endpoints.length - 1]!
 
-    const comp1 = components.get(ep1.componentId)
-    const comp2 = components.get(ep2.componentId)
-    const pl1 = placements.get(ep1.componentId)
-    const pl2 = placements.get(ep2.componentId)
-    if (!comp1 || !comp2 || !pl1 || !pl2) continue
-
-    const pad1 = comp1.pads.find((p) => p.id === ep1.padId)
-    const pad2 = comp2.pads.find((p) => p.id === ep2.padId)
-    if (!pad1 || !pad2) continue
-
-    const rad1 = (pl1.rotation * Math.PI) / 180
-    const rad2 = (pl2.rotation * Math.PI) / 180
-    const start: Point = {
-      x: pl1.x + pad1.localX * Math.cos(rad1) - pad1.localY * Math.sin(rad1),
-      y: pl1.y + pad1.localX * Math.sin(rad1) + pad1.localY * Math.cos(rad1),
-    }
-    const goal: Point = {
-      x: pl2.x + pad2.localX * Math.cos(rad2) - pad2.localY * Math.sin(rad2),
-      y: pl2.y + pad2.localX * Math.sin(rad2) + pad2.localY * Math.cos(rad2),
+    const start = getWorldPadPosition(components, placements, ep1.componentId, ep1.padId)
+    const goal = getWorldPadPosition(components, placements, ep2.componentId, ep2.padId)
+    if (!start || !goal) {
+      unrouted.add(conn.id)
+      continue
     }
 
-    const layer = existingTrace.segments[0]?.layer || ep1.layer || "top"
+    const layer = ep1.layer || "top"
+    const excludePads = new Set([ep1.padId, ep2.padId])
+    const mesh = getMesh(layer, excludePads)
 
-    // Build fresh mesh excluding start/end pads AND this connection's traces,
-    // but keeping all other traces as obstacles
-    const path = findPath(
-      layer, start, goal, board, components, placements,
-      updatedTraces ?? routedTraces,
-      conn.id, // exclude this connection's trace obstacles
-      [ep1.padId, ep2.padId], // exclude start/end pads
-    )
-
-    if (path && path.length >= 2) {
-      successCount++
-      if (!updatedTraces) updatedTraces = new Map(routedTraces)
-      updatedTraces.set(conn.id, {
-        connectionId: conn.id,
-        segments: [{
-          points: path,
-          layer,
-          width: existingTrace.segments[0]?.width || 0.15,
-        }],
-        vias: [],
-      })
+    if (!mesh) {
+      unrouted.add(conn.id)
+      continue
     }
+
+    try {
+      const si = new SearchInstance(mesh)
+      si.setStartGoal(start, goal)
+      const found = si.search()
+
+      if (found) {
+        const path = si.getPathPoints()
+        if (path && path.length >= 2) {
+          successes++
+          traces.set(conn.id, {
+            connectionId: conn.id,
+            segments: [{
+              points: path,
+              layer,
+              width: 0.15,
+            }],
+            vias: [],
+          })
+          continue
+        }
+      }
+    } catch (e: any) {
+      meshDebug.lastError = `route ${conn.id}: ${e.message?.slice(0, 60) || e}`
+    }
+
+    unrouted.add(conn.id)
   }
 
-  meshDebug.lastRerouteAttempts = rerouteCount
-  meshDebug.lastRerouteSuccesses = successCount
+  meshDebug.lastRerouteAttempts = attempts
+  meshDebug.lastRerouteSuccesses = successes
 
-  return updatedTraces
+  return { traces, unrouted }
+}
+
+/**
+ * Legacy compat — reroute traces for a specific component.
+ * Now just routes all traces (simplified approach).
+ */
+export function rerouteComponentTraces(
+  _componentId: string,
+  board: BoardData,
+  components: Map<string, ComponentData>,
+  placements: Map<string, PlacementState>,
+  connections: ConnectionData[],
+  _routedTraces: Map<string, RoutedTrace>,
+): Map<string, RoutedTrace> | null {
+  const { traces } = routeAllTraces(board, components, placements, connections)
+  return traces.size > 0 ? traces : null
 }

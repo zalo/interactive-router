@@ -3,9 +3,7 @@ import { useAppStore } from "./state/store"
 import { renderFrame, type CanvasContext } from "./canvas/renderer"
 import { setupInputHandlers, type InputState } from "./interaction/inputManager"
 import { createCameraState } from "./interaction/camera"
-import { buildSimpleRouteJson } from "./state/srjBuilder"
-import { runAutorouter } from "./autorouter/runner"
-import { rerouteComponentTraces, invalidateAllMeshes, buildDebugMesh, meshDebug } from "./pathfinding/meshManager"
+import { routeAllTraces, invalidateAllMeshes, buildDebugMesh, meshDebug } from "./pathfinding/meshManager"
 import { Toolbar } from "./ui/Toolbar"
 
 export function App() {
@@ -83,19 +81,17 @@ export function App() {
     function tick() {
       const state = useAppStore.getState()
 
-      // Live reroute traces when a component is being dragged
+      // Live reroute ALL traces when a component is being dragged
       if (state.dragState.componentId && state.routedTraces.size > 0) {
         invalidateAllMeshes()
-        const newTraces = rerouteComponentTraces(
-          state.dragState.componentId,
+        const { traces, unrouted } = routeAllTraces(
           state.board,
           state.components,
           state.placements,
           state.connections,
-          state.routedTraces,
         )
-        if (newTraces) {
-          state.setRoutedTraces(newTraces, state.unroutedConnectionIds)
+        if (traces.size > 0) {
+          state.setRoutedTraces(traces, unrouted)
         }
       }
 
@@ -120,48 +116,27 @@ export function App() {
     }
   }, [initialized])
 
-  // Auto-route when mode switches to "autorouting"
+  // Auto-route when mode switches to "autorouting" — simplified single-pass Polyanya
   useEffect(() => {
     if (mode !== "autorouting") return
 
     const state = useAppStore.getState()
-    const srj = buildSimpleRouteJson(state.board, state.components, state.placements, state.connections)
+    state.setAutorouterProgress(0.5)
 
-    state.setAutorouterProgress(0.01)
+    // Simple single-pass: build pad-only mesh, route all traces
+    const t0 = performance.now()
+    const { traces, unrouted } = routeAllTraces(
+      state.board,
+      state.components,
+      state.placements,
+      state.connections,
+    )
+    const elapsed = performance.now() - t0
 
-    runAutorouter(srj, 10000, (progress) => {
-      useAppStore.getState().setAutorouterProgress(progress)
-    }).then((result) => {
-      const s = useAppStore.getState()
-
-      const routedNames = new Set(result.traces.keys())
-      const unroutedIds = new Set<string>()
-      for (const conn of s.connections) {
-        if (!routedNames.has(conn.name)) {
-          unroutedIds.add(conn.id)
-        }
-      }
-
-      const tracesById = new Map<string, any>()
-      for (const conn of s.connections) {
-        const trace = result.traces.get(conn.name)
-        if (trace) {
-          tracesById.set(conn.id, { ...trace, connectionId: conn.id })
-        }
-      }
-
-      s.setRoutedTraces(tracesById, unroutedIds)
-      s.setAutorouterProgress(0)
-      // Store autorouter debug data for visualization
-      if (result.debugData) {
-        meshDebug.autorouterBaseObstacles = result.debugData.baseObstaclePolygons
-        meshDebug.autorouterTraceObstacles = result.debugData.traceObstaclePolygons
-        meshDebug.autorouterMeshPolygons = result.debugData.meshPolygons
-      }
-
-      console.log(`[autorouter] ${tracesById.size} routed, ${unroutedIds.size} unrouted, ${result.elapsedMs.toFixed(0)}ms`)
-      s.setMode("interactive")
-    })
+    state.setRoutedTraces(traces, unrouted)
+    state.setAutorouterProgress(0)
+    console.log(`[autorouter] ${traces.size} routed, ${unrouted.size} unrouted, ${elapsed.toFixed(0)}ms`)
+    state.setMode("interactive")
   }, [mode])
 
   // Rebuild debug mesh when debug view changes
