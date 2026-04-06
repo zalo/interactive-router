@@ -8,6 +8,8 @@ export function Toolbar() {
   const resetToAutoPlacement = useAppStore((s) => s.resetToAutoPlacement)
   const routedTraces = useAppStore((s) => s.routedTraces)
   const autorouterProgress = useAppStore((s) => s.autorouterProgress)
+  const debugView = useAppStore((s) => s.debugView)
+  const setDebugView = useAppStore((s) => s.setDebugView)
 
   return (
     <>
@@ -80,6 +82,26 @@ export function Toolbar() {
             {mode === "autorouting" ? `${Math.round(autorouterProgress * 100)}%` : "Route"}
           </button>
         </div>
+
+        {/* Debug view dropdown */}
+        <select
+          value={debugView}
+          onChange={(e) => setDebugView(e.target.value as any)}
+          style={{
+            marginTop: 2,
+            padding: "4px 6px",
+            borderRadius: 4,
+            border: "1px solid #3a3a5c",
+            background: "#1a1a2e",
+            color: "#808098",
+            fontSize: 11,
+            fontFamily: "'Inter', system-ui, sans-serif",
+          }}
+        >
+          <option value="normal">Normal View</option>
+          <option value="obstacles">Obstacle Map</option>
+          <option value="mesh">CDT Mesh</option>
+        </select>
 
         {/* Status */}
         {routedTraces.size > 0 && (

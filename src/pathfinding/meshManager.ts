@@ -1,65 +1,76 @@
 /**
  * Per-layer navigation mesh manager for interactive routing.
- * Builds CDT meshes from pad obstacles, caches them, and provides
- * fast polyanya pathfinding queries.
+ * Uses CDT mesh EXCLUSION (not obstacle toggling) — rebuilds the mesh
+ * for each query, excluding the start/end pad obstacles so the pathfinder
+ * can reach them. Other routed traces remain as obstacles.
  */
 
-import type { ComponentData, PlacementState, RoutedTrace, BoardData, Point } from "../types"
-import { cdtTriangulate, rectToPolygon } from "polyanya"
-import { buildMeshFromRegions } from "polyanya"
-import { mergeMesh } from "polyanya"
-import { SearchInstance } from "polyanya"
+import type { ComponentData, PlacementState, RoutedTrace, BoardData, Point, ConnectionData } from "../types"
+import { cdtTriangulate, rectToPolygon } from "../lib/polyanya/index"
+import { buildMeshFromRegions } from "../lib/polyanya/index"
+import { mergeMesh } from "../lib/polyanya/index"
+import { SearchInstance } from "../lib/polyanya/index"
 
-interface LayerMesh {
-  mesh: any // Mesh from polyanya
-  dirty: boolean
-}
+const PAD_CLEARANCE = 0.15 // mm clearance around pads
 
-const layerMeshes = new Map<string, LayerMesh>()
-const TRACE_CLEARANCE = 0.15 // mm clearance around routed traces
-const PAD_CLEARANCE = 0.15   // mm clearance around pads (must be >= trace half-width)
-
-/** Debug status visible on the overlay */
 export const meshDebug = {
   lastMeshObstacles: 0,
   lastRerouteAttempts: 0,
   lastRerouteSuccesses: 0,
   lastError: "",
   frameCount: 0,
+  lastObstaclePolygons: [] as Array<{ x: number; y: number }[]>,
+  lastMeshPolygons: [] as Array<{ vertices: { x: number; y: number }[]; blocked: boolean; obstacleIndex: number }>,
+  autorouterBaseObstacles: [] as Array<{ x: number; y: number }[]>,
+  autorouterTraceObstacles: [] as Array<{ x: number; y: number }[]>,
+  autorouterMeshPolygons: [] as Array<{ vertices: { x: number; y: number }[]; blocked: boolean; obstacleIndex: number }>,
 }
 
-export function invalidateAllMeshes() {
-  for (const lm of layerMeshes.values()) lm.dirty = true
-}
+export function invalidateAllMeshes() {}
+export function invalidateLayerMesh(layer: string) {}
 
-export function invalidateLayerMesh(layer: string) {
-  const lm = layerMeshes.get(layer)
-  if (lm) lm.dirty = true
-}
-
-/**
- * Build or rebuild the navigation mesh for a given layer.
- * Obstacles = pads on this layer + routed trace segments on this layer.
- * The mesh is cached and only rebuilt when marked dirty.
- */
-export function ensureMesh(
+/** Force build a mesh for debug viewing */
+export function buildDebugMesh(
   layer: string,
   board: BoardData,
   components: Map<string, ComponentData>,
   placements: Map<string, PlacementState>,
   routedTraces: Map<string, RoutedTrace>,
-  excludeConnectionId?: string,
-): any {
-  const existing = layerMeshes.get(layer)
-  if (existing && !existing.dirty) return existing.mesh
+) {
+  const { mesh, obstacles } = buildMeshForLayer(layer, board, components, placements, routedTraces, new Set())
+  if (mesh) {
+    meshDebug.lastObstaclePolygons = obstacles
+    meshDebug.lastMeshPolygons = mesh.polygons.map((poly: any) => ({
+      vertices: poly.vertices.map((vi: number) => ({
+        x: mesh.vertices[vi].p.x,
+        y: mesh.vertices[vi].p.y,
+      })),
+      blocked: poly.blocked,
+      obstacleIndex: poly.obstacleIndex,
+    }))
+  }
+}
 
+/**
+ * Build a navigation mesh for a layer, excluding specific pad IDs.
+ * Returns both the mesh and the obstacle list (for debug rendering).
+ */
+function buildMeshForLayer(
+  layer: string,
+  board: BoardData,
+  components: Map<string, ComponentData>,
+  placements: Map<string, PlacementState>,
+  routedTraces: Map<string, RoutedTrace>,
+  excludePadIds: Set<string>,
+  excludeConnectionId?: string,
+): { mesh: any; obstacles: Array<{ x: number; y: number }[]> } {
   const halfW = board.width / 2
   const halfH = board.height / 2
   const bounds = { minX: -halfW - 1, maxX: halfW + 1, minY: -halfH - 1, maxY: halfH + 1 }
 
   const obstacles: Array<{ x: number; y: number }[]> = []
 
-  // Add pad obstacles on this layer
+  // Add pad obstacles on this layer (excluding specified pads)
   for (const [compId, comp] of components) {
     const placement = placements.get(compId)
     if (!placement) continue
@@ -69,6 +80,8 @@ export function ensureMesh(
     const sin = Math.sin(rad)
 
     for (const pad of comp.pads) {
+      if (excludePadIds.has(pad.id)) continue
+
       const padLayers = pad.layers || [pad.layer]
       if (!padLayers.includes(layer)) continue
 
@@ -79,27 +92,17 @@ export function ensureMesh(
     }
   }
 
-  // Add routed trace segments as obstacles on this layer
+  // Add routed trace segments as obstacles (excluding the connection being rerouted).
+  // Use proper oriented polygons (not bounding boxes).
   for (const [connId, trace] of routedTraces) {
     if (connId === excludeConnectionId) continue
 
     for (const seg of trace.segments) {
       if (seg.layer !== layer) continue
-      // Expand each segment of the polyline into a rectangle obstacle
-      for (let i = 0; i < seg.points.length - 1; i++) {
-        const p1 = seg.points[i]
-        const p2 = seg.points[i + 1]
-        const cx = (p1.x + p2.x) / 2
-        const cy = (p1.y + p2.y) / 2
-        const dx = p2.x - p1.x
-        const dy = p2.y - p1.y
-        const len = Math.sqrt(dx * dx + dy * dy)
-        if (len < 0.01) continue
-        // Approximate as axis-aligned rect (conservative)
-        const w = Math.abs(dx) + seg.width
-        const h = Math.abs(dy) + seg.width
-        obstacles.push(rectToPolygon(cx, cy, w, h, TRACE_CLEARANCE))
-      }
+      if (seg.points.length < 2) continue
+
+      const tracePolys = pathToObstaclePolygons(seg.points, seg.width / 2 + PAD_CLEARANCE)
+      obstacles.push(...tracePolys)
     }
   }
 
@@ -108,18 +111,57 @@ export function ensureMesh(
     const cdtResult = cdtTriangulate({ bounds, obstacles })
     const rawMesh = buildMeshFromRegions(cdtResult)
     const mesh = mergeMesh(rawMesh)
-
-    layerMeshes.set(layer, { mesh, dirty: false })
-    return mesh
+    return { mesh, obstacles }
   } catch (e) {
-    console.warn(`[mesh] Failed to build mesh for layer ${layer}:`, e)
-    return null
+    meshDebug.lastError = `mesh build failed: ${e}`
+    return { mesh: null, obstacles }
   }
 }
 
 /**
- * Find a path between two points on a given layer using polyanya.
- * Returns the path points or null if no path found.
+ * Convert a polyline path into oriented obstacle polygons (proper corridors).
+ * Same approach as the autorouter's pathToObstaclePolygons.
+ */
+function pathToObstaclePolygons(path: Point[], clearance: number): Array<{ x: number; y: number }[]> {
+  if (path.length < 2) return []
+
+  // Deduplicate
+  const pts: Point[] = [path[0]!]
+  for (let i = 1; i < path.length; i++) {
+    const prev = pts[pts.length - 1]!
+    const cur = path[i]!
+    if (Math.abs(cur.x - prev.x) > 1e-9 || Math.abs(cur.y - prev.y) > 1e-9) {
+      pts.push(cur)
+    }
+  }
+  if (pts.length < 2) return []
+
+  // For each segment, create an oriented rectangle (corridor)
+  const polys: Array<{ x: number; y: number }[]> = []
+  for (let i = 0; i < pts.length - 1; i++) {
+    const a = pts[i]!
+    const b = pts[i + 1]!
+    const dx = b.x - a.x
+    const dy = b.y - a.y
+    const len = Math.hypot(dx, dy)
+    if (len < 1e-9) continue
+
+    const nx = -dy / len * clearance
+    const ny = dx / len * clearance
+
+    polys.push([
+      { x: a.x + nx, y: a.y + ny },
+      { x: b.x + nx, y: b.y + ny },
+      { x: b.x - nx, y: b.y - ny },
+      { x: a.x - nx, y: a.y - ny },
+    ])
+  }
+  return polys
+}
+
+/**
+ * Find a path between two points, building a fresh CDT mesh with
+ * the start/end pads excluded from obstacles.
  */
 export function findPath(
   layer: string,
@@ -130,8 +172,13 @@ export function findPath(
   placements: Map<string, PlacementState>,
   routedTraces: Map<string, RoutedTrace>,
   excludeConnectionId?: string,
+  excludePadIds?: string[],
 ): Point[] | null {
-  const mesh = ensureMesh(layer, board, components, placements, routedTraces, excludeConnectionId)
+  const { mesh } = buildMeshForLayer(
+    layer, board, components, placements, routedTraces,
+    new Set(excludePadIds || []),
+    excludeConnectionId,
+  )
   if (!mesh) return null
 
   try {
@@ -139,14 +186,7 @@ export function findPath(
     si.setStartGoal(start, goal)
     const found = si.search()
     if (!found) {
-      const startLoc = mesh.getPointLocation(start)
-      const goalLoc = mesh.getPointLocation(goal)
-      const startBlocked = startLoc.poly1 >= 0 ? mesh.polygons[startLoc.poly1]?.blocked : "N/A"
-      const goalBlocked = goalLoc.poly1 >= 0 ? mesh.polygons[goalLoc.poly1]?.blocked : "N/A"
-      const startObs = startLoc.poly1 >= 0 ? mesh.polygons[startLoc.poly1]?.obstacleIndex : -1
-      const goalObs = goalLoc.poly1 >= 0 ? mesh.polygons[goalLoc.poly1]?.obstacleIndex : -1
-      const polyanyaDebug = (si as any)._lastDebug || ""
-      meshDebug.lastError = `FAIL s=(${start.x.toFixed(1)},${start.y.toFixed(1)}) p=${startLoc.poly1} b=${startBlocked} o=${startObs} | g=(${goal.x.toFixed(1)},${goal.y.toFixed(1)}) p=${goalLoc.poly1} b=${goalBlocked} o=${goalObs} | ${polyanyaDebug}`
+      meshDebug.lastError = `search failed: (${start.x.toFixed(1)},${start.y.toFixed(1)})->(${goal.x.toFixed(1)},${goal.y.toFixed(1)})`
       return null
     }
     return si.getPathPoints()
@@ -158,24 +198,24 @@ export function findPath(
 
 /**
  * Reroute all traces connected to a specific component.
- * Used during component drag to update traces live.
+ * For each trace, builds a fresh CDT mesh excluding:
+ * - The start/end pads of that connection
+ * - The connection's own trace (but keeps all other traces as obstacles)
  */
 export function rerouteComponentTraces(
   componentId: string,
   board: BoardData,
   components: Map<string, ComponentData>,
   placements: Map<string, PlacementState>,
-  connections: any[],
+  connections: ConnectionData[],
   routedTraces: Map<string, RoutedTrace>,
 ): Map<string, RoutedTrace> | null {
-  // Only create a new map if we actually change something
   let updatedTraces: Map<string, RoutedTrace> | null = null
   let rerouteCount = 0
   let successCount = 0
   meshDebug.lastError = ""
   meshDebug.frameCount++
 
-  // Find all connections that touch this component
   for (const conn of connections) {
     const touchesComponent = conn.endpoints.some((ep: any) => ep.componentId === componentId)
     if (!touchesComponent) continue
@@ -184,10 +224,9 @@ export function rerouteComponentTraces(
     if (!existingTrace) continue
     rerouteCount++
 
-    // Get the two endpoints of this connection in world space
     if (conn.endpoints.length < 2) continue
-    const ep1 = conn.endpoints[0]
-    const ep2 = conn.endpoints[conn.endpoints.length - 1]
+    const ep1 = conn.endpoints[0]!
+    const ep2 = conn.endpoints[conn.endpoints.length - 1]!
 
     const comp1 = components.get(ep1.componentId)
     const comp2 = components.get(ep2.componentId)
@@ -210,15 +249,16 @@ export function rerouteComponentTraces(
       y: pl2.y + pad2.localX * Math.sin(rad2) + pad2.localY * Math.cos(rad2),
     }
 
-    // Try to reroute on the same layer as the first segment
-    // (straight-line fallback if polyanya fails)
     const layer = existingTrace.segments[0]?.layer || ep1.layer || "top"
 
-    invalidateLayerMesh(layer)
-
-    meshDebug.lastError = `trying ${conn.name}: (${start.x.toFixed(1)},${start.y.toFixed(1)})->(${goal.x.toFixed(1)},${goal.y.toFixed(1)}) layer=${layer}`
-
-    const path = findPath(layer, start, goal, board, components, placements, updatedTraces ?? routedTraces, conn.id)
+    // Build fresh mesh excluding start/end pads AND this connection's traces,
+    // but keeping all other traces as obstacles
+    const path = findPath(
+      layer, start, goal, board, components, placements,
+      updatedTraces ?? routedTraces,
+      conn.id, // exclude this connection's trace obstacles
+      [ep1.padId, ep2.padId], // exclude start/end pads
+    )
 
     if (path && path.length >= 2) {
       successCount++
@@ -233,12 +273,10 @@ export function rerouteComponentTraces(
         vias: [],
       })
     }
-    // If polyanya fails, DON'T touch the trace — keep old route
   }
 
   meshDebug.lastRerouteAttempts = rerouteCount
   meshDebug.lastRerouteSuccesses = successCount
 
-  // Return null if nothing changed (caller should NOT call setRoutedTraces)
   return updatedTraces
 }

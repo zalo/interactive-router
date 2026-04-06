@@ -58,6 +58,7 @@ export interface AppState {
 
   // Settings
   componentMargin: number // mm of padding around components for trace routing
+  debugView: "normal" | "obstacles" | "mesh" // render debug overlay
 
   // Loading
   initialized: boolean
@@ -77,6 +78,7 @@ export interface AppState {
   setActiveRoute: (route: ActiveRoute | null) => void
   setAutorouterProgress: (progress: number) => void
   setComponentMargin: (margin: number) => void
+  setDebugView: (view: "normal" | "obstacles" | "mesh") => void
   randomizePlacements: () => void
   resetToAutoPlacement: () => void
   recomputeMetrics: () => void
@@ -296,6 +298,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   hoveredComponentId: null,
   autoPlacedPlacements: new Map(),
   componentMargin: 1.5,
+  debugView: "normal" as const,
   initialized: false,
   autorouterProgress: 0,
   placementVersion: 0,
@@ -372,6 +375,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setActiveRoute: (route) => set({ activeRoute: route }),
   setAutorouterProgress: (progress) => set({ autorouterProgress: progress }),
   setComponentMargin: (margin) => set({ componentMargin: margin }),
+  setDebugView: (view) => set({ debugView: view }),
 
   randomizePlacements() {
     const s = get()

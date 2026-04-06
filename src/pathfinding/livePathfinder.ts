@@ -1,10 +1,10 @@
 /**
  * Live pathfinding for cursor-following during interactive routing.
- * Wraps meshManager for quick per-frame queries.
+ * Uses CDT mesh exclusion — rebuilds mesh per query excluding start/end pads.
  */
 
 import type { Point, BoardData, ComponentData, PlacementState, RoutedTrace } from "../types"
-import { findPath, invalidateAllMeshes } from "./meshManager"
+import { findPath } from "./meshManager"
 
 export interface LivePathState {
   connectionId: string
@@ -14,6 +14,8 @@ export interface LivePathState {
   targetLayer: string
   currentLayer: string
   anchorPoint: Point
+  startPadId?: string
+  endPadId?: string
   placedVias: Array<{ x: number; y: number; fromLayer: string; toLayer: string }>
   committedSegments: Array<{ points: Point[]; layer: string; width: number }>
 }
@@ -29,7 +31,6 @@ export function startLiveRoute(
   startPadId?: string,
   endPadId?: string,
 ) {
-  invalidateAllMeshes()
   activeState = {
     connectionId,
     startPoint,
@@ -38,6 +39,8 @@ export function startLiveRoute(
     targetLayer,
     currentLayer: startLayer,
     anchorPoint: { ...startPoint },
+    startPadId,
+    endPadId,
     placedVias: [],
     committedSegments: [],
   }
@@ -47,10 +50,6 @@ export function getLiveState(): LivePathState | null {
   return activeState
 }
 
-/**
- * Query a path from the current anchor to the mouse position.
- * Called every frame during active routing.
- */
 export function queryLivePath(
   mousePos: Point,
   board: BoardData,
@@ -59,6 +58,9 @@ export function queryLivePath(
   routedTraces: Map<string, RoutedTrace>,
 ): Point[] | null {
   if (!activeState) return null
+
+  // Exclude start/end pads from the mesh so pathfinder can reach them
+  const excludePads = [activeState.startPadId, activeState.endPadId].filter(Boolean) as string[]
 
   return findPath(
     activeState.currentLayer,
@@ -69,12 +71,10 @@ export function queryLivePath(
     placements,
     routedTraces,
     activeState.connectionId,
+    excludePads,
   )
 }
 
-/**
- * Also compute the completion path from mouse to the target endpoint.
- */
 export function queryCompletionPath(
   mousePos: Point,
   board: BoardData,
@@ -83,6 +83,8 @@ export function queryCompletionPath(
   routedTraces: Map<string, RoutedTrace>,
 ): Point[] | null {
   if (!activeState) return null
+
+  const excludePads = [activeState.startPadId, activeState.endPadId].filter(Boolean) as string[]
 
   return findPath(
     activeState.currentLayer,
@@ -93,23 +95,16 @@ export function queryCompletionPath(
     placements,
     routedTraces,
     activeState.connectionId,
+    excludePads,
   )
 }
 
-/**
- * Place a via at the current mouse position. Commits the segment from
- * anchor to via, toggles layer, sets new anchor.
- */
-export function placeVia(
-  viaPos: Point,
-  pathToVia: Point[],
-): void {
+export function placeVia(viaPos: Point, pathToVia: Point[]): void {
   if (!activeState) return
 
   const fromLayer = activeState.currentLayer
   const toLayer = fromLayer === "top" ? "bottom" : "top"
 
-  // Commit segment from anchor to via
   if (pathToVia.length >= 2) {
     activeState.committedSegments.push({
       points: pathToVia,
@@ -118,27 +113,16 @@ export function placeVia(
     })
   }
 
-  activeState.placedVias.push({
-    x: viaPos.x,
-    y: viaPos.y,
-    fromLayer,
-    toLayer,
-  })
-
+  activeState.placedVias.push({ x: viaPos.x, y: viaPos.y, fromLayer, toLayer })
   activeState.currentLayer = toLayer
   activeState.anchorPoint = { ...viaPos }
 }
 
-/**
- * Complete the route — commit the final segment to the target endpoint.
- * Returns the finished trace data.
- */
 export function completeRoute(
   pathToTarget: Point[],
 ): { segments: Array<{ points: Point[]; layer: string; width: number }>; vias: Array<{ x: number; y: number; fromLayer: string; toLayer: string; diameter: number }> } | null {
   if (!activeState) return null
 
-  // Commit final segment
   if (pathToTarget.length >= 2) {
     activeState.committedSegments.push({
       points: pathToTarget,
@@ -153,13 +137,11 @@ export function completeRoute(
   }
 
   activeState = null
-  invalidateAllMeshes()
   return result
 }
 
 export function cancelRoute() {
   activeState = null
-  invalidateAllMeshes()
 }
 
 export function isRouteActive(): boolean {

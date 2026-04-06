@@ -1,5 +1,5 @@
 import type { AppState } from "../state/store"
-import { renderBoard, renderComponents, renderComponentLabels, renderPads, renderRatsnest, renderTraces, renderOverlay, renderInteractivePreview } from "./layers"
+import { renderBoard, renderComponents, renderComponentLabels, renderPads, renderRatsnest, renderTraces, renderOverlay, renderInteractivePreview, renderDebugObstacles, renderDebugMesh } from "./layers"
 
 export interface CanvasContext {
   ctx: CanvasRenderingContext2D
@@ -65,6 +65,11 @@ export function renderFrame(canvas: HTMLCanvasElement, state: AppState) {
   renderRatsnest(ctx, cc, state)
   renderComponents(ctx, cc, state)
   renderPads(ctx, cc, state)
+
+  // Debug overlays (drawn ABOVE pads so obstacles/mesh are visible)
+  if (state.debugView === "obstacles") renderDebugObstacles(ctx, cc, state)
+  if (state.debugView === "mesh") renderDebugMesh(ctx, cc, state)
+
   renderTraces(ctx, cc, state)
   renderComponentLabels(ctx, cc, state)
   renderInteractivePreview(ctx, cc, state)

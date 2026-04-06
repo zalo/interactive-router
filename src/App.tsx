@@ -5,7 +5,7 @@ import { setupInputHandlers, type InputState } from "./interaction/inputManager"
 import { createCameraState } from "./interaction/camera"
 import { buildSimpleRouteJson } from "./state/srjBuilder"
 import { runAutorouter } from "./autorouter/runner"
-import { rerouteComponentTraces, invalidateAllMeshes } from "./pathfinding/meshManager"
+import { rerouteComponentTraces, invalidateAllMeshes, buildDebugMesh, meshDebug } from "./pathfinding/meshManager"
 import { Toolbar } from "./ui/Toolbar"
 
 export function App() {
@@ -25,6 +25,7 @@ export function App() {
   const mode = useAppStore((s) => s.mode)
   const componentMargin = useAppStore((s) => s.componentMargin)
   const placementVersion = useAppStore((s) => s.placementVersion)
+  const debugView = useAppStore((s) => s.debugView)
 
   // Load circuit data
   useEffect(() => {
@@ -64,11 +65,17 @@ export function App() {
       }
     }
 
-    // No physics callbacks needed — drag is direct position update
     cleanupRef.current = setupInputHandlers(
       canvas,
       inputStateRef.current,
       getCC,
+      () => {
+        // On drag end: rebuild debug mesh with full obstacles (no exclusions)
+        const s = useAppStore.getState()
+        if (s.debugView !== "normal") {
+          buildDebugMesh("top", s.board, s.components, s.placements, s.routedTraces)
+        }
+      },
     )
 
     let metricsCounter = 0
@@ -90,6 +97,11 @@ export function App() {
         if (newTraces) {
           state.setRoutedTraces(newTraces, state.unroutedConnectionIds)
         }
+      }
+
+      // Rebuild debug mesh every frame when debug view is active
+      if (state.debugView !== "normal") {
+        buildDebugMesh("top", state.board, state.components, state.placements, state.routedTraces)
       }
 
       metricsCounter++
@@ -140,10 +152,24 @@ export function App() {
 
       s.setRoutedTraces(tracesById, unroutedIds)
       s.setAutorouterProgress(0)
+      // Store autorouter debug data for visualization
+      if (result.debugData) {
+        meshDebug.autorouterBaseObstacles = result.debugData.baseObstaclePolygons
+        meshDebug.autorouterTraceObstacles = result.debugData.traceObstaclePolygons
+        meshDebug.autorouterMeshPolygons = result.debugData.meshPolygons
+      }
+
       console.log(`[autorouter] ${tracesById.size} routed, ${unroutedIds.size} unrouted, ${result.elapsedMs.toFixed(0)}ms`)
       s.setMode("interactive")
     })
   }, [mode])
+
+  // Rebuild debug mesh when debug view changes
+  useEffect(() => {
+    if (!initialized || debugView === "normal") return
+    const state = useAppStore.getState()
+    buildDebugMesh("top", state.board, state.components, state.placements, state.routedTraces)
+  }, [debugView, initialized, placementVersion])
 
   // Keyboard shortcuts
   useEffect(() => {

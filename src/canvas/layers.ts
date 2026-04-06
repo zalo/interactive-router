@@ -4,7 +4,7 @@ import type { CanvasContext } from "./renderer"
 import type { Point, PlacementState, ComponentData } from "../types"
 import { livePreviewRef } from "../types"
 import { getLiveState } from "../pathfinding/livePathfinder"
-// Debug overlay removed in simplified branch
+import { meshDebug } from "../pathfinding/meshManager"
 
 // Color palette
 const COLORS = {
@@ -377,4 +377,86 @@ export function renderOverlay(ctx: CanvasRenderingContext2D, cc: CanvasContext, 
   }
 
   ctx.restore()
+}
+
+function drawPolygonList(
+  ctx: CanvasRenderingContext2D,
+  polygons: Array<{ x: number; y: number }[]>,
+  fillColor: string,
+  strokeColor: string,
+  showLabels: boolean,
+) {
+  for (let i = 0; i < polygons.length; i++) {
+    const poly = polygons[i]!
+    if (poly.length < 3) continue
+
+    ctx.fillStyle = fillColor
+    ctx.strokeStyle = strokeColor
+    ctx.lineWidth = 0.05
+
+    ctx.beginPath()
+    ctx.moveTo(poly[0]!.x, poly[0]!.y)
+    for (let j = 1; j < poly.length; j++) {
+      ctx.lineTo(poly[j]!.x, poly[j]!.y)
+    }
+    ctx.closePath()
+    ctx.fill()
+    ctx.stroke()
+
+    if (showLabels) {
+      const cx = poly.reduce((s, p) => s + p.x, 0) / poly.length
+      const cy = poly.reduce((s, p) => s + p.y, 0) / poly.length
+      ctx.save()
+      ctx.translate(cx, cy)
+      ctx.scale(1, -1)
+      ctx.font = "0.35px sans-serif"
+      ctx.fillStyle = "#fff"
+      ctx.textAlign = "center"
+      ctx.textBaseline = "middle"
+      ctx.fillText(`${i}`, 0, 0)
+      ctx.restore()
+    }
+  }
+}
+
+/** Render obstacle polygons — always uses live data from buildDebugMesh */
+export function renderDebugObstacles(ctx: CanvasRenderingContext2D, cc: CanvasContext, state: AppState) {
+  // Live pad obstacles (green) — rebuilt every frame from current placements
+  drawPolygonList(ctx, meshDebug.lastObstaclePolygons, "rgba(40, 180, 80, 0.25)", "rgba(40, 180, 80, 0.7)", true)
+
+  // Autorouter trace obstacles (orange) — from last routing run
+  if (meshDebug.autorouterTraceObstacles.length > 0) {
+    drawPolygonList(ctx, meshDebug.autorouterTraceObstacles, "rgba(220, 100, 40, 0.2)", "rgba(220, 100, 40, 0.7)", false)
+  }
+}
+
+/** Render CDT mesh — always uses live data from buildDebugMesh */
+export function renderDebugMesh(ctx: CanvasRenderingContext2D, cc: CanvasContext, state: AppState) {
+  const polys = meshDebug.lastMeshPolygons
+  if (polys.length === 0) return
+
+  for (const poly of polys) {
+    if (poly.vertices.length < 3) continue
+
+    if (poly.blocked) {
+      ctx.fillStyle = "rgba(180, 40, 40, 0.25)"
+      ctx.strokeStyle = "rgba(180, 40, 40, 0.5)"
+    } else if (poly.obstacleIndex >= 0) {
+      ctx.fillStyle = "rgba(180, 120, 40, 0.15)"
+      ctx.strokeStyle = "rgba(180, 120, 40, 0.4)"
+    } else {
+      ctx.fillStyle = "rgba(40, 120, 180, 0.06)"
+      ctx.strokeStyle = "rgba(40, 120, 180, 0.25)"
+    }
+    ctx.lineWidth = 0.03
+
+    ctx.beginPath()
+    ctx.moveTo(poly.vertices[0]!.x, poly.vertices[0]!.y)
+    for (let j = 1; j < poly.vertices.length; j++) {
+      ctx.lineTo(poly.vertices[j]!.x, poly.vertices[j]!.y)
+    }
+    ctx.closePath()
+    ctx.fill()
+    ctx.stroke()
+  }
 }

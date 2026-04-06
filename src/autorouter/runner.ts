@@ -5,11 +5,18 @@
 
 import type { RoutedTrace, TraceSegment, ViaData, Point } from "../types"
 
+export interface AutorouterDebugData {
+  baseObstaclePolygons: Array<{ x: number; y: number }[]>  // layer 0
+  traceObstaclePolygons: Array<{ x: number; y: number }[]> // layer 0
+  meshPolygons: Array<{ vertices: { x: number; y: number }[]; blocked: boolean; obstacleIndex: number }>
+}
+
 export interface AutorouterResult {
   success: boolean
   traces: Map<string, RoutedTrace>
   unroutedIds: Set<string>
   elapsedMs: number
+  debugData?: AutorouterDebugData
 }
 
 export async function runAutorouter(
@@ -17,13 +24,15 @@ export async function runAutorouter(
   timeoutMs = 10000,
   onProgress?: (progress: number) => void,
 ): Promise<AutorouterResult> {
-  const mod = await import("@tscircuit/capacity-autorouter")
+  const mod = await import("../lib/autorouter/autorouter-pipelines/GreedySequentialPipeline/GreedySequentialPipelineSolver")
   const { GreedySequentialPipelineSolver } = mod
 
   console.log("[autorouter] Module loaded, exports:", Object.keys(mod).filter(k => k.includes("Greedy") || k.includes("Pipeline")).join(", "))
   console.log("[autorouter] SRJ:", srj.connections.length, "connections,", srj.obstacles.length, "obstacles")
 
-  const solver = new GreedySequentialPipelineSolver(srj)
+  const solver = new GreedySequentialPipelineSolver(srj, {
+    useOccupancyToggle: false, // rebuild CDT per-connection for more accurate exclusion
+  })
   const startTime = performance.now()
   console.log("[autorouter] Solver created, starting...")
 
@@ -185,10 +194,40 @@ function extractResult(
     allConnectionNames.delete(trace.connection_name)
   }
 
+  // Extract debug data from the greedy solver
+  let debugData: AutorouterDebugData | undefined
+  try {
+    const gs = solver.greedySolver
+    if (gs) {
+      const baseObs = gs.baseObstaclePolygons?.[0] || []
+      const traceObs = gs.tracePolygonObstacles?.[0] || []
+      const mesh = gs.meshes?.[0]
+
+      let meshPolygons: AutorouterDebugData["meshPolygons"] = []
+      if (mesh) {
+        meshPolygons = mesh.polygons.map((poly: any) => ({
+          vertices: poly.vertices.map((vi: number) => ({
+            x: mesh.vertices[vi].p.x,
+            y: mesh.vertices[vi].p.y,
+          })),
+          blocked: poly.blocked,
+          obstacleIndex: poly.obstacleIndex,
+        }))
+      }
+
+      debugData = {
+        baseObstaclePolygons: baseObs,
+        traceObstaclePolygons: traceObs,
+        meshPolygons,
+      }
+    }
+  } catch {}
+
   return {
     success: solver.solved && allConnectionNames.size === 0,
     traces,
     unroutedIds: allConnectionNames,
     elapsedMs,
+    debugData,
   }
 }

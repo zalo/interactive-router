@@ -52,6 +52,7 @@ export function setupInputHandlers(
   canvas: HTMLCanvasElement,
   inputState: InputState,
   getCC: () => CanvasContext,
+  onDragEnd?: () => void,
 ): () => void {
   const store = useAppStore.getState
   const { setCamera, setDragState, setHoveredComponent, toggleFrozen, updatePlacement } = useAppStore.getState()
@@ -208,6 +209,7 @@ export function setupInputHandlers(
     const s = store()
     if (s.dragState.componentId && s.dragState.pointerId === e.pointerId) {
       setDragState({ componentId: null, offsetX: 0, offsetY: 0, pointerId: null })
+      onDragEnd?.()
     }
 
     canvas.releasePointerCapture(e.pointerId)
