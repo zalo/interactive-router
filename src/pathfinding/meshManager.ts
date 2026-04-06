@@ -1,5 +1,5 @@
 /**
- * Simplified mesh manager: builds ONE navigation mesh from pad obstacles only,
+ * Simplified mesh manager: builds ONE navigation mesh from pad obstacles,
  * then routes all connections via Polyanya with no regard for trace overlap.
  *
  * On component move → rebake CDT from pad footprints → merge convex regions → route all traces.
@@ -11,6 +11,7 @@ import { buildMeshFromRegions } from "../lib/polyanya/index"
 import { mergeMesh } from "../lib/polyanya/index"
 import { SearchInstance } from "../lib/polyanya/index"
 import { getWorldPadPosition } from "../state/store"
+import { PointLocationType } from "../lib/polyanya/types"
 
 const PAD_CLEARANCE = 0.15 // mm clearance around pads
 
@@ -23,7 +24,6 @@ function rotatedRectPolygon(
   const hh = h / 2 + clearance
   const cos = Math.cos(rotation)
   const sin = Math.sin(rotation)
-  // Local corners, then rotate + translate
   const corners = [
     { lx: -hw, ly: -hh },
     { lx:  hw, ly: -hh },
@@ -60,7 +60,7 @@ export function buildDebugMesh(
   placements: Map<string, PlacementState>,
   _routedTraces: Map<string, RoutedTrace>,
 ) {
-  const { mesh, obstacles } = buildPadOnlyMesh(layer, board, components, placements, new Set())
+  const { mesh, obstacles } = buildPadOnlyMesh(layer, board, components, placements)
   if (mesh) {
     meshDebug.lastObstaclePolygons = obstacles
     meshDebug.lastMeshPolygons = mesh.polygons.map((poly: any) => ({
@@ -75,15 +75,14 @@ export function buildDebugMesh(
 }
 
 /**
- * Build a navigation mesh from pad obstacles only — no trace corridors.
- * Excludes specific pad IDs so the pathfinder can reach start/end points.
+ * Build a single navigation mesh from ALL pad obstacles.
+ * No per-connection exclusion — one mesh for everything.
  */
 function buildPadOnlyMesh(
   layer: string,
   board: BoardData,
   components: Map<string, ComponentData>,
   placements: Map<string, PlacementState>,
-  excludePadIds: Set<string>,
 ): { mesh: any; obstacles: Array<{ x: number; y: number }[]> } {
   const halfW = board.width / 2
   const halfH = board.height / 2
@@ -91,7 +90,6 @@ function buildPadOnlyMesh(
 
   const obstacles: Array<{ x: number; y: number }[]> = []
 
-  // Only pad obstacles — no trace corridors, with proper rotation
   for (const [compId, comp] of components) {
     const placement = placements.get(compId)
     if (!placement) continue
@@ -101,16 +99,12 @@ function buildPadOnlyMesh(
     const sin = Math.sin(rad)
 
     for (const pad of comp.pads) {
-      if (excludePadIds.has(pad.id)) continue
-
       const padLayers = pad.layers || [pad.layer]
       if (!padLayers.includes(layer)) continue
 
-      // World position of pad center (rotated by component rotation)
       const wx = placement.x + pad.localX * cos - pad.localY * sin
       const wy = placement.y + pad.localX * sin + pad.localY * cos
 
-      // Rotated pad obstacle — inherits component rotation
       obstacles.push(rotatedRectPolygon(wx, wy, pad.width, pad.height, rad, PAD_CLEARANCE))
     }
   }
@@ -128,6 +122,47 @@ function buildPadOnlyMesh(
 }
 
 /**
+ * Snap a point that's inside an obstacle (off-mesh) to the nearest
+ * navigable point on the mesh boundary.
+ * Scans all mesh polygon edges and finds the closest projection.
+ */
+function snapToMesh(mesh: any, p: Point): Point | null {
+  let bestDist = Infinity
+  let bestPoint: Point | null = null
+
+  for (const poly of mesh.polygons) {
+    const verts: number[] = poly.vertices
+    for (let i = 0; i < verts.length; i++) {
+      const adjPoly = poly.polygons[i]
+      // Only consider boundary edges (adjacent to -1) or any edge really —
+      // we just need the nearest point on any traversable polygon edge
+      const ai = verts[i]!
+      const bi = verts[(i + 1) % verts.length]!
+      const a = mesh.vertices[ai].p
+      const b = mesh.vertices[bi].p
+
+      // Project p onto segment a-b
+      const dx = b.x - a.x
+      const dy = b.y - a.y
+      const lenSq = dx * dx + dy * dy
+      if (lenSq < 1e-12) continue
+
+      let t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / lenSq
+      t = Math.max(0, Math.min(1, t))
+
+      const proj = { x: a.x + t * dx, y: a.y + t * dy }
+      const dist = Math.hypot(proj.x - p.x, proj.y - p.y)
+      if (dist < bestDist) {
+        bestDist = dist
+        bestPoint = proj
+      }
+    }
+  }
+
+  return bestPoint
+}
+
+/**
  * Find a path between two points on a pad-only mesh.
  */
 export function findPath(
@@ -141,21 +176,29 @@ export function findPath(
   excludeConnectionId?: string,
   excludePadIds?: string[],
 ): Point[] | null {
-  const { mesh } = buildPadOnlyMesh(
-    layer, board, components, placements,
-    new Set(excludePadIds || []),
-  )
+  const { mesh } = buildPadOnlyMesh(layer, board, components, placements)
   if (!mesh) return null
 
   try {
     const si = new SearchInstance(mesh)
-    si.setStartGoal(start, goal)
+    const s = resolveOrSnap(mesh, start)
+    const g = resolveOrSnap(mesh, goal)
+    if (!s || !g) return null
+
+    si.setStartGoal(s, g)
     const found = si.search()
-    if (!found) {
-      meshDebug.lastError = `search failed: (${start.x.toFixed(1)},${start.y.toFixed(1)})->(${goal.x.toFixed(1)},${goal.y.toFixed(1)})`
-      return null
+    if (!found) return null
+
+    const path = si.getPathPoints()
+    // Prepend/append original points if we snapped
+    if (s !== start || g !== goal) {
+      const result: Point[] = []
+      if (s !== start) result.push(start)
+      result.push(...path)
+      if (g !== goal) result.push(goal)
+      return result
     }
-    return si.getPathPoints()
+    return path
   } catch (e: any) {
     meshDebug.lastError = `exception: ${e.message?.slice(0, 80) || e}`
     return null
@@ -163,9 +206,19 @@ export function findPath(
 }
 
 /**
+ * If the point is on the mesh, return it as-is.
+ * If it's off-mesh (inside an obstacle), snap to nearest mesh edge.
+ */
+function resolveOrSnap(mesh: any, p: Point): Point | null {
+  const loc = mesh.getPointLocation(p)
+  if (loc.type !== PointLocationType.NOT_ON_MESH) return p // it's on the mesh
+  return snapToMesh(mesh, p)
+}
+
+/**
  * Route ALL connections on a single pad-only mesh.
- * Builds one CDT per layer from pad footprints, then runs Polyanya for every connection.
- * No trace obstacles, no incremental rebuilds — just pure shortest paths.
+ * Builds ONE CDT from all pad footprints, then runs Polyanya for every connection.
+ * Points inside obstacles are snapped to the nearest mesh edge.
  */
 export function routeAllTraces(
   board: BoardData,
@@ -178,22 +231,25 @@ export function routeAllTraces(
   meshDebug.lastError = ""
   meshDebug.frameCount++
 
-  // Cache meshes per layer so we only build once per layer
-  const meshCache = new Map<string, any>()
+  const t0 = performance.now()
 
-  function getMesh(layer: string, excludePadIds: Set<string>): any {
-    // Build a mesh excluding the connection's own pads so pathfinder can reach them
-    // Cache key includes excluded pads since different connections exclude different pads
-    const cacheKey = `${layer}:${[...excludePadIds].sort().join(",")}`
-    if (meshCache.has(cacheKey)) return meshCache.get(cacheKey)
-
-    const { mesh } = buildPadOnlyMesh(layer, board, components, placements, excludePadIds)
-    meshCache.set(cacheKey, mesh)
-    return mesh
+  // Build ONE mesh for each layer (most boards: just "top")
+  const meshCache = new Map<string, { mesh: any; obstacles: any[] }>()
+  function getMesh(layer: string) {
+    if (meshCache.has(layer)) return meshCache.get(layer)!
+    const result = buildPadOnlyMesh(layer, board, components, placements)
+    meshCache.set(layer, result)
+    return result
   }
+
+  const tMesh = performance.now()
 
   let attempts = 0
   let successes = 0
+  let failNoMesh = 0
+  let failNoSnap = 0
+  let failNoPath = 0
+  let failException = 0
 
   for (const conn of connections) {
     if (conn.endpoints.length < 2) {
@@ -206,18 +262,27 @@ export function routeAllTraces(
     const ep1 = conn.endpoints[0]!
     const ep2 = conn.endpoints[conn.endpoints.length - 1]!
 
-    const start = getWorldPadPosition(components, placements, ep1.componentId, ep1.padId)
-    const goal = getWorldPadPosition(components, placements, ep2.componentId, ep2.padId)
-    if (!start || !goal) {
+    const startRaw = getWorldPadPosition(components, placements, ep1.componentId, ep1.padId)
+    const goalRaw = getWorldPadPosition(components, placements, ep2.componentId, ep2.padId)
+    if (!startRaw || !goalRaw) {
       unrouted.add(conn.id)
       continue
     }
 
     const layer = ep1.layer || "top"
-    const excludePads = new Set([ep1.padId, ep2.padId])
-    const mesh = getMesh(layer, excludePads)
+    const { mesh } = getMesh(layer)
 
     if (!mesh) {
+      failNoMesh++
+      unrouted.add(conn.id)
+      continue
+    }
+
+    // Snap start/goal to mesh if they're inside obstacles
+    const start = resolveOrSnap(mesh, startRaw)
+    const goal = resolveOrSnap(mesh, goalRaw)
+    if (!start || !goal) {
+      failNoSnap++
       unrouted.add(conn.id)
       continue
     }
@@ -228,8 +293,14 @@ export function routeAllTraces(
       const found = si.search()
 
       if (found) {
-        const path = si.getPathPoints()
-        if (path && path.length >= 2) {
+        const pathCore = si.getPathPoints()
+        if (pathCore && pathCore.length >= 2) {
+          // Prepend/append original pad positions if we snapped
+          const path: Point[] = []
+          if (start !== startRaw) path.push(startRaw)
+          path.push(...pathCore)
+          if (goal !== goalRaw) path.push(goalRaw)
+
           successes++
           traces.set(conn.id, {
             connectionId: conn.id,
@@ -243,15 +314,33 @@ export function routeAllTraces(
           continue
         }
       }
+      failNoPath++
     } catch (e: any) {
+      failException++
       meshDebug.lastError = `route ${conn.id}: ${e.message?.slice(0, 60) || e}`
     }
 
     unrouted.add(conn.id)
   }
 
+  const tDone = performance.now()
+
   meshDebug.lastRerouteAttempts = attempts
   meshDebug.lastRerouteSuccesses = successes
+
+  // Log diagnostics (only on first call or when not dragging to avoid spam)
+  if (meshDebug.frameCount <= 2 || meshDebug.frameCount % 60 === 0) {
+    const meshMs = (tMesh - t0).toFixed(1)
+    const searchMs = (tDone - tMesh).toFixed(1)
+    const totalMs = (tDone - t0).toFixed(1)
+    const layers = [...meshCache.keys()]
+    const polyCount = layers.map(l => meshCache.get(l)?.mesh?.polygons?.length ?? 0)
+    console.log(
+      `[meshManager] ${successes}/${attempts} routed | ` +
+      `mesh: ${meshMs}ms (${polyCount.join("/")} polys) | search: ${searchMs}ms | total: ${totalMs}ms | ` +
+      `fail: noMesh=${failNoMesh} noSnap=${failNoSnap} noPath=${failNoPath} exception=${failException}`
+    )
+  }
 
   return { traces, unrouted }
 }
