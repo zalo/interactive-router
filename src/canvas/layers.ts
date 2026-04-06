@@ -445,8 +445,9 @@ export function renderDebugMesh(ctx: CanvasRenderingContext2D, cc: CanvasContext
       ctx.fillStyle = "rgba(180, 120, 40, 0.15)"
       ctx.strokeStyle = "rgba(180, 120, 40, 0.4)"
     } else {
-      ctx.fillStyle = "rgba(40, 120, 180, 0.06)"
-      ctx.strokeStyle = "rgba(40, 120, 180, 0.25)"
+      // Navigable polygons — visible enough to debug mesh structure
+      ctx.fillStyle = "rgba(40, 120, 180, 0.15)"
+      ctx.strokeStyle = "rgba(40, 120, 180, 0.5)"
     }
     ctx.lineWidth = 0.03
 

@@ -36,6 +36,21 @@ function rotatedRectPolygon(
   }))
 }
 
+/**
+ * Clip a polygon's vertices to stay within bounds.
+ * Simple vertex clamping — not true polygon clipping, but sufficient
+ * to prevent CDT degeneration from out-of-bounds constraint edges.
+ */
+function clipObstacleToBounds(
+  poly: { x: number; y: number }[],
+  bounds: { minX: number; maxX: number; minY: number; maxY: number },
+): { x: number; y: number }[] {
+  return poly.map(p => ({
+    x: Math.max(bounds.minX + 0.01, Math.min(bounds.maxX - 0.01, p.x)),
+    y: Math.max(bounds.minY + 0.01, Math.min(bounds.maxY - 0.01, p.y)),
+  }))
+}
+
 export const meshDebug = {
   lastMeshObstacles: 0,
   lastRerouteAttempts: 0,
@@ -47,6 +62,10 @@ export const meshDebug = {
   autorouterBaseObstacles: [] as Array<{ x: number; y: number }[]>,
   autorouterTraceObstacles: [] as Array<{ x: number; y: number }[]>,
   autorouterMeshPolygons: [] as Array<{ vertices: { x: number; y: number }[]; blocked: boolean; obstacleIndex: number }>,
+  // CDT diagnostics
+  lastCdtRegions: 0,
+  lastRawMeshPolygons: 0,
+  lastMergedPolygons: 0,
 }
 
 export function invalidateAllMeshes() {}
@@ -63,13 +82,15 @@ export function buildDebugMesh(
   const { mesh, obstacles } = buildPadOnlyMesh(layer, board, components, placements)
   if (mesh) {
     meshDebug.lastObstaclePolygons = obstacles
+    // All merged mesh polygons are navigable (obstacles are filtered out by CDT).
+    // Mark them as not-blocked so the renderer shows them clearly.
     meshDebug.lastMeshPolygons = mesh.polygons.map((poly: any) => ({
       vertices: poly.vertices.map((vi: number) => ({
         x: mesh.vertices[vi].p.x,
         y: mesh.vertices[vi].p.y,
       })),
-      blocked: poly.blocked,
-      obstacleIndex: poly.obstacleIndex,
+      blocked: false,
+      obstacleIndex: -1,
     }))
   }
 }
@@ -105,15 +126,37 @@ function buildPadOnlyMesh(
       const wx = placement.x + pad.localX * cos - pad.localY * sin
       const wy = placement.y + pad.localX * sin + pad.localY * cos
 
-      obstacles.push(rotatedRectPolygon(wx, wy, pad.width, pad.height, rad, PAD_CLEARANCE))
+      let poly = rotatedRectPolygon(wx, wy, pad.width, pad.height, rad, PAD_CLEARANCE)
+      // Clip to bounds to prevent CDT degeneration from out-of-bounds constraints
+      poly = clipObstacleToBounds(poly, bounds)
+      obstacles.push(poly)
     }
   }
 
   try {
     meshDebug.lastMeshObstacles = obstacles.length
     const cdtResult = cdtTriangulate({ bounds, obstacles })
+    meshDebug.lastCdtRegions = cdtResult.regions.length
+
+    if (cdtResult.regions.length === 0) {
+      console.warn(`[meshManager] CDT produced 0 regions from ${obstacles.length} obstacles — CDT failed`)
+      return { mesh: null, obstacles }
+    }
+
     const rawMesh = buildMeshFromRegions(cdtResult)
+    meshDebug.lastRawMeshPolygons = rawMesh.polygons.length
     const mesh = mergeMesh(rawMesh)
+    meshDebug.lastMergedPolygons = mesh.polygons.length
+
+    // Warn when mesh is suspiciously small
+    if (mesh.polygons.length <= 5 && obstacles.length > 5) {
+      console.warn(
+        `[meshManager] Mesh collapsed: ${obstacles.length} obstacles → ` +
+        `${cdtResult.regions.length} CDT regions → ${rawMesh.polygons.length} raw polys → ` +
+        `${mesh.polygons.length} merged polys`
+      )
+    }
+
     return { mesh, obstacles }
   } catch (e) {
     meshDebug.lastError = `mesh build failed: ${e}`
@@ -133,9 +176,6 @@ function snapToMesh(mesh: any, p: Point): Point | null {
   for (const poly of mesh.polygons) {
     const verts: number[] = poly.vertices
     for (let i = 0; i < verts.length; i++) {
-      const adjPoly = poly.polygons[i]
-      // Only consider boundary edges (adjacent to -1) or any edge really —
-      // we just need the nearest point on any traversable polygon edge
       const ai = verts[i]!
       const bi = verts[(i + 1) % verts.length]!
       const a = mesh.vertices[ai].p
@@ -190,7 +230,6 @@ export function findPath(
     if (!found) return null
 
     const path = si.getPathPoints()
-    // Prepend/append original points if we snapped
     if (s !== start || g !== goal) {
       const result: Point[] = []
       if (s !== start) result.push(start)
@@ -211,7 +250,7 @@ export function findPath(
  */
 function resolveOrSnap(mesh: any, p: Point): Point | null {
   const loc = mesh.getPointLocation(p)
-  if (loc.type !== PointLocationType.NOT_ON_MESH) return p // it's on the mesh
+  if (loc.type !== PointLocationType.NOT_ON_MESH) return p
   return snapToMesh(mesh, p)
 }
 
@@ -249,6 +288,7 @@ export function routeAllTraces(
   let failNoMesh = 0
   let failNoSnap = 0
   let failNoPath = 0
+  let failDiffIsland = 0
   let failException = 0
 
   for (const conn of connections) {
@@ -288,6 +328,16 @@ export function routeAllTraces(
     }
 
     try {
+      // Check island connectivity before searching
+      const startLoc = mesh.getPointLocation(start)
+      const goalLoc = mesh.getPointLocation(goal)
+      if (startLoc.poly1 >= 0 && goalLoc.poly1 >= 0 &&
+          !mesh.sameIsland(startLoc.poly1, goalLoc.poly1)) {
+        failDiffIsland++
+        unrouted.add(conn.id)
+        continue
+      }
+
       const si = new SearchInstance(mesh)
       si.setStartGoal(start, goal)
       const found = si.search()
@@ -295,7 +345,6 @@ export function routeAllTraces(
       if (found) {
         const pathCore = si.getPathPoints()
         if (pathCore && pathCore.length >= 2) {
-          // Prepend/append original pad positions if we snapped
           const path: Point[] = []
           if (start !== startRaw) path.push(startRaw)
           path.push(...pathCore)
@@ -328,7 +377,7 @@ export function routeAllTraces(
   meshDebug.lastRerouteAttempts = attempts
   meshDebug.lastRerouteSuccesses = successes
 
-  // Log diagnostics (only on first call or when not dragging to avoid spam)
+  // Log diagnostics
   if (meshDebug.frameCount <= 2 || meshDebug.frameCount % 60 === 0) {
     const meshMs = (tMesh - t0).toFixed(1)
     const searchMs = (tDone - tMesh).toFixed(1)
@@ -337,8 +386,9 @@ export function routeAllTraces(
     const polyCount = layers.map(l => meshCache.get(l)?.mesh?.polygons?.length ?? 0)
     console.log(
       `[meshManager] ${successes}/${attempts} routed | ` +
-      `mesh: ${meshMs}ms (${polyCount.join("/")} polys) | search: ${searchMs}ms | total: ${totalMs}ms | ` +
-      `fail: noMesh=${failNoMesh} noSnap=${failNoSnap} noPath=${failNoPath} exception=${failException}`
+      `mesh: ${meshMs}ms (${meshDebug.lastCdtRegions} CDT→${meshDebug.lastRawMeshPolygons} raw→${polyCount.join("/")} merged) | ` +
+      `search: ${searchMs}ms | total: ${totalMs}ms | ` +
+      `fail: noMesh=${failNoMesh} noSnap=${failNoSnap} island=${failDiffIsland} noPath=${failNoPath} exc=${failException}`
     )
   }
 
