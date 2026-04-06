@@ -98,6 +98,8 @@ export function buildDebugMesh(
 /**
  * Build a single navigation mesh from ALL pad obstacles.
  * No per-connection exclusion — one mesh for everything.
+ * Clearance per pad is capped at half the distance to the nearest other pad
+ * so that adjacent obstacles never merge into a wall.
  */
 function buildPadOnlyMesh(
   layer: string,
@@ -109,7 +111,8 @@ function buildPadOnlyMesh(
   const halfH = board.height / 2
   const bounds = { minX: -halfW - 1, maxX: halfW + 1, minY: -halfH - 1, maxY: halfH + 1 }
 
-  const obstacles: Array<{ x: number; y: number }[]> = []
+  // First pass: compute world positions of all pads on this layer
+  const padInfos: { wx: number; wy: number; pw: number; ph: number; rad: number; compId: string }[] = []
 
   for (const [compId, comp] of components) {
     const placement = placements.get(compId)
@@ -123,14 +126,40 @@ function buildPadOnlyMesh(
       const padLayers = pad.layers || [pad.layer]
       if (!padLayers.includes(layer)) continue
 
-      const wx = placement.x + pad.localX * cos - pad.localY * sin
-      const wy = placement.y + pad.localX * sin + pad.localY * cos
-
-      let poly = rotatedRectPolygon(wx, wy, pad.width, pad.height, rad, PAD_CLEARANCE)
-      // Clip to bounds to prevent CDT degeneration from out-of-bounds constraints
-      poly = clipObstacleToBounds(poly, bounds)
-      obstacles.push(poly)
+      padInfos.push({
+        wx: placement.x + pad.localX * cos - pad.localY * sin,
+        wy: placement.y + pad.localX * sin + pad.localY * cos,
+        pw: pad.width,
+        ph: pad.height,
+        rad,
+        compId,
+      })
     }
+  }
+
+  // Second pass: for each pad, compute adaptive clearance
+  const MIN_CLEARANCE = 0.02 // minimum so obstacles don't degenerate
+  const obstacles: Array<{ x: number; y: number }[]> = []
+
+  for (let i = 0; i < padInfos.length; i++) {
+    const pi = padInfos[i]!
+
+    // Find distance to nearest pad from a DIFFERENT component
+    let minDist = Infinity
+    for (let j = 0; j < padInfos.length; j++) {
+      if (i === j) continue
+      const pj = padInfos[j]!
+      if (pj.compId === pi.compId) continue // skip same-component pads
+      const d = Math.hypot(pi.wx - pj.wx, pi.wy - pj.wy)
+      if (d < minDist) minDist = d
+    }
+
+    // Clearance = min(desired, halfDistToNearest) so two pads' obstacles don't merge
+    const clearance = Math.max(MIN_CLEARANCE, Math.min(PAD_CLEARANCE, minDist / 2))
+
+    let poly = rotatedRectPolygon(pi.wx, pi.wy, pi.pw, pi.ph, pi.rad, clearance)
+    poly = clipObstacleToBounds(poly, bounds)
+    obstacles.push(poly)
   }
 
   try {
