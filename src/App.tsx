@@ -77,41 +77,53 @@ export function App() {
     )
 
     let metricsCounter = 0
+    let renderScheduled = false
 
-    function tick() {
-      const state = useAppStore.getState()
+    /** Schedule a single render on the next animation frame. */
+    function requestRender() {
+      if (renderScheduled) return
+      renderScheduled = true
+      rafRef.current = requestAnimationFrame(() => {
+        renderScheduled = false
+        const state = useAppStore.getState()
 
-      // Live reroute ALL traces when a component is being dragged
-      if (state.dragState.componentId && state.routedTraces.size > 0) {
-        invalidateAllMeshes()
-        const { traces, unrouted } = routeAllTraces(
-          state.board,
-          state.components,
-          state.placements,
-          state.connections,
-        )
-        if (traces.size > 0) {
-          state.setRoutedTraces(traces, unrouted)
+        // Live reroute ALL traces when a component is being dragged
+        if (state.dragState.componentId && state.routedTraces.size > 0) {
+          invalidateAllMeshes()
+          const { traces, unrouted } = routeAllTraces(
+            state.board,
+            state.components,
+            state.placements,
+            state.connections,
+          )
+          if (traces.size > 0) {
+            state.setRoutedTraces(traces, unrouted)
+          }
         }
-      }
 
-      // Debug mesh piggybacks on routeAllTraces; only build separately if needed
-      if (state.debugView !== "normal" && meshDebug.lastObstaclePolygons.length === 0) {
-        buildDebugMesh("top", state.board, state.components, state.placements, state.routedTraces)
-      }
+        // Debug mesh piggybacks on routeAllTraces; only build separately if needed
+        if (state.debugView !== "normal" && meshDebug.lastObstaclePolygons.length === 0) {
+          buildDebugMesh("top", state.board, state.components, state.placements, state.routedTraces)
+        }
 
-      metricsCounter++
-      if (metricsCounter % 30 === 0) {
-        state.recomputeMetrics()
-      }
+        metricsCounter++
+        if (metricsCounter % 30 === 0) {
+          state.recomputeMetrics()
+        }
 
-      renderFrame(canvas!, state)
-      rafRef.current = requestAnimationFrame(tick)
+        renderFrame(canvas!, state)
+      })
     }
-    rafRef.current = requestAnimationFrame(tick)
+
+    // Re-render whenever zustand state changes (camera, placements, traces, etc.)
+    const unsubscribe = useAppStore.subscribe(requestRender)
+
+    // Initial render
+    requestRender()
 
     return () => {
       cancelAnimationFrame(rafRef.current)
+      unsubscribe()
       cleanupRef.current?.()
     }
   }, [initialized])
