@@ -144,17 +144,16 @@ function buildPadOnlyMesh(
   for (let i = 0; i < padInfos.length; i++) {
     const pi = padInfos[i]!
 
-    // Find distance to nearest pad from a DIFFERENT component
+    // Find distance to nearest OTHER pad (any component, including same)
     let minDist = Infinity
     for (let j = 0; j < padInfos.length; j++) {
       if (i === j) continue
       const pj = padInfos[j]!
-      if (pj.compId === pi.compId) continue // skip same-component pads
       const d = Math.hypot(pi.wx - pj.wx, pi.wy - pj.wy)
       if (d < minDist) minDist = d
     }
 
-    // Clearance = min(desired, halfDistToNearest) so two pads' obstacles don't merge
+    // Clearance = min(desired, halfDistToNearest) so no two pad obstacles merge
     const clearance = Math.max(MIN_CLEARANCE, Math.min(PAD_CLEARANCE, minDist / 2))
 
     let poly = rotatedRectPolygon(pi.wx, pi.wy, pi.pw, pi.ph, pi.rad, clearance)
