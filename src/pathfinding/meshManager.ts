@@ -51,6 +51,49 @@ function clipObstacleToBounds(
   }))
 }
 
+/** Minimum distance between two convex polygons (edge-to-edge). */
+function polyPolyDist(
+  a: { x: number; y: number }[],
+  b: { x: number; y: number }[],
+): number {
+  let best = Infinity
+  for (let i = 0; i < a.length; i++) {
+    const a1 = a[i]!, a2 = a[(i + 1) % a.length]!
+    for (let j = 0; j < b.length; j++) {
+      const b1 = b[j]!, b2 = b[(j + 1) % b.length]!
+      best = Math.min(best, segSegDist(a1, a2, b1, b2))
+    }
+  }
+  return best
+}
+
+/** Minimum distance between two line segments. */
+function segSegDist(
+  p1: { x: number; y: number }, p2: { x: number; y: number },
+  p3: { x: number; y: number }, p4: { x: number; y: number },
+): number {
+  // Check all 4 point-to-segment projections + segment intersection
+  return Math.min(
+    ptSegDist(p1, p3, p4),
+    ptSegDist(p2, p3, p4),
+    ptSegDist(p3, p1, p2),
+    ptSegDist(p4, p1, p2),
+  )
+}
+
+/** Distance from point p to segment a-b. */
+function ptSegDist(
+  p: { x: number; y: number },
+  a: { x: number; y: number },
+  b: { x: number; y: number },
+): number {
+  const dx = b.x - a.x, dy = b.y - a.y
+  const lenSq = dx * dx + dy * dy
+  if (lenSq < 1e-12) return Math.hypot(p.x - a.x, p.y - a.y)
+  const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / lenSq))
+  return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy))
+}
+
 export const meshDebug = {
   lastMeshObstacles: 0,
   lastRerouteAttempts: 0,
@@ -137,24 +180,27 @@ function buildPadOnlyMesh(
     }
   }
 
-  // Second pass: for each pad, compute adaptive clearance
+  // Second pass: build base (zero-clearance) polygons, then measure edge-to-edge gaps
+  const basPolys = padInfos.map(pi =>
+    rotatedRectPolygon(pi.wx, pi.wy, pi.pw, pi.ph, pi.rad, 0)
+  )
+
   const MIN_CLEARANCE = 0.02 // minimum so obstacles don't degenerate
   const obstacles: Array<{ x: number; y: number }[]> = []
 
   for (let i = 0; i < padInfos.length; i++) {
     const pi = padInfos[i]!
 
-    // Find distance to nearest OTHER pad (any component, including same)
-    let minDist = Infinity
+    // Find minimum edge-to-edge gap to any other pad polygon
+    let minGap = Infinity
     for (let j = 0; j < padInfos.length; j++) {
       if (i === j) continue
-      const pj = padInfos[j]!
-      const d = Math.hypot(pi.wx - pj.wx, pi.wy - pj.wy)
-      if (d < minDist) minDist = d
+      const d = polyPolyDist(basPolys[i]!, basPolys[j]!)
+      if (d < minGap) minGap = d
     }
 
-    // Clearance = min(desired, halfDistToNearest) so no two pad obstacles merge
-    const clearance = Math.max(MIN_CLEARANCE, Math.min(PAD_CLEARANCE, minDist / 2))
+    // Clearance = min(desired, halfGap) so expanded obstacles never merge
+    const clearance = Math.max(MIN_CLEARANCE, Math.min(PAD_CLEARANCE, minGap / 2))
 
     let poly = rotatedRectPolygon(pi.wx, pi.wy, pi.pw, pi.ph, pi.rad, clearance)
     poly = clipObstacleToBounds(poly, bounds)
