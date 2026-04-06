@@ -381,15 +381,17 @@ export function routeAllTraces(
 
   const t0 = performance.now()
 
-  // Build ONE mesh for each layer (most boards: just "top")
-  const meshCache = new Map<string, { mesh: any; obstacles: any[] }>()
+  // Build ONE mesh per layer, reuse ONE SearchInstance per mesh
+  const meshCache = new Map<string, { mesh: any; obstacles: any[]; si: SearchInstance | null }>()
   function getMesh(layer: string) {
     if (meshCache.has(layer)) return meshCache.get(layer)!
     const result = buildPadOnlyMesh(layer, board, components, placements)
-    meshCache.set(layer, result)
+    const si = result.mesh ? new SearchInstance(result.mesh) : null
+    const entry = { ...result, si }
+    meshCache.set(layer, entry)
     // Populate debug data from the first mesh we build (usually "top")
     if (result.mesh) updateDebugData(result.mesh, result.obstacles)
-    return result
+    return entry
   }
 
   const tMesh = performance.now()
@@ -421,9 +423,9 @@ export function routeAllTraces(
     }
 
     const layer = ep1.layer || "top"
-    const { mesh } = getMesh(layer)
+    const { mesh, si } = getMesh(layer)
 
-    if (!mesh) {
+    if (!mesh || !si) {
       failNoMesh++
       unrouted.add(conn.id)
       continue
@@ -447,7 +449,6 @@ export function routeAllTraces(
         continue
       }
 
-      const si = new SearchInstance(mesh)
       si.setStartGoal(start, goal)
       const found = si.search()
 

@@ -78,10 +78,11 @@ export function App() {
 
     let metricsCounter = 0
     let renderScheduled = false
+    let isRouting = false // guard against setRoutedTraces re-triggering render
 
     /** Schedule a single render on the next animation frame. */
     function requestRender() {
-      if (renderScheduled) return
+      if (renderScheduled || isRouting) return
       renderScheduled = true
       rafRef.current = requestAnimationFrame(() => {
         renderScheduled = false
@@ -90,6 +91,7 @@ export function App() {
         // Live reroute ALL traces when a component is being dragged
         if (state.dragState.componentId && state.routedTraces.size > 0) {
           invalidateAllMeshes()
+          isRouting = true
           const { traces, unrouted } = routeAllTraces(
             state.board,
             state.components,
@@ -99,6 +101,7 @@ export function App() {
           if (traces.size > 0) {
             state.setRoutedTraces(traces, unrouted)
           }
+          isRouting = false
         }
 
         // Debug mesh piggybacks on routeAllTraces; only build separately if needed
@@ -118,12 +121,17 @@ export function App() {
     // Re-render whenever zustand state changes (camera, placements, traces, etc.)
     const unsubscribe = useAppStore.subscribe(requestRender)
 
+    // Re-render on window resize
+    const onResize = () => requestRender()
+    window.addEventListener("resize", onResize)
+
     // Initial render
     requestRender()
 
     return () => {
       cancelAnimationFrame(rafRef.current)
       unsubscribe()
+      window.removeEventListener("resize", onResize)
       cleanupRef.current?.()
     }
   }, [initialized])
