@@ -173,7 +173,23 @@ export function invalidateLayerMesh(_layer: string) {}
 
 // ─── Mesh building ───────────────────────────────────────────────────
 
-/** Force build a mesh for debug viewing */
+/** Extract debug visualization data from an already-built mesh + obstacles. */
+function updateDebugData(mesh: any, obstacles: Array<{ x: number; y: number }[]>) {
+  meshDebug.lastObstaclePolygons = obstacles
+  meshDebug.lastMeshPolygons = mesh.polygons.map((poly: any) => ({
+    vertices: poly.vertices.map((vi: number) => ({
+      x: mesh.vertices[vi].p.x,
+      y: mesh.vertices[vi].p.y,
+    })),
+    blocked: false,
+    obstacleIndex: -1,
+  }))
+}
+
+/**
+ * Build a debug mesh only if routeAllTraces hasn't already populated it
+ * (e.g. when no traces are routed yet but debug view is on).
+ */
 export function buildDebugMesh(
   layer: string,
   board: BoardData,
@@ -181,18 +197,11 @@ export function buildDebugMesh(
   placements: Map<string, PlacementState>,
   _routedTraces: Map<string, RoutedTrace>,
 ) {
+  // If routeAllTraces already ran this frame, debug data is up to date
+  if (meshDebug.lastObstaclePolygons.length > 0) return
+
   const { mesh, obstacles } = buildPadOnlyMesh(layer, board, components, placements)
-  if (mesh) {
-    meshDebug.lastObstaclePolygons = obstacles
-    meshDebug.lastMeshPolygons = mesh.polygons.map((poly: any) => ({
-      vertices: poly.vertices.map((vi: number) => ({
-        x: mesh.vertices[vi].p.x,
-        y: mesh.vertices[vi].p.y,
-      })),
-      blocked: false,
-      obstacleIndex: -1,
-    }))
-  }
+  if (mesh) updateDebugData(mesh, obstacles)
 }
 
 /**
@@ -367,6 +376,7 @@ export function routeAllTraces(
   const traces = new Map<string, RoutedTrace>()
   const unrouted = new Set<string>()
   meshDebug.lastError = ""
+  meshDebug.lastObstaclePolygons = [] // reset so buildDebugMesh knows if we populated it
   meshDebug.frameCount++
 
   const t0 = performance.now()
@@ -377,6 +387,8 @@ export function routeAllTraces(
     if (meshCache.has(layer)) return meshCache.get(layer)!
     const result = buildPadOnlyMesh(layer, board, components, placements)
     meshCache.set(layer, result)
+    // Populate debug data from the first mesh we build (usually "top")
+    if (result.mesh) updateDebugData(result.mesh, result.obstacles)
     return result
   }
 

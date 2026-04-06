@@ -95,8 +95,8 @@ export function App() {
         }
       }
 
-      // Rebuild debug mesh every frame when debug view is active
-      if (state.debugView !== "normal") {
+      // Debug mesh piggybacks on routeAllTraces; only build separately if needed
+      if (state.debugView !== "normal" && meshDebug.lastObstaclePolygons.length === 0) {
         buildDebugMesh("top", state.board, state.components, state.placements, state.routedTraces)
       }
 
