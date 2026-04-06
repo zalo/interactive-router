@@ -402,6 +402,13 @@ export function routeAllTraces(
   let failDiffIsland = 0
   let failException = 0
 
+  let tSearchTotal = 0
+  let tSnapTotal = 0
+  let tLocateTotal = 0
+  let maxSearchMs = 0
+  let maxSearchConn = ""
+  let maxNodesPopped = 0
+
   for (const conn of connections) {
     if (conn.endpoints.length < 2) {
       unrouted.add(conn.id)
@@ -429,8 +436,11 @@ export function routeAllTraces(
       continue
     }
 
+    const tSnap0 = performance.now()
     const start = resolveOrSnap(mesh, startRaw)
     const goal = resolveOrSnap(mesh, goalRaw)
+    tSnapTotal += performance.now() - tSnap0
+
     if (!start || !goal) {
       failNoSnap++
       unrouted.add(conn.id)
@@ -438,8 +448,11 @@ export function routeAllTraces(
     }
 
     try {
+      const tLoc0 = performance.now()
       const startLoc = mesh.getPointLocation(start)
       const goalLoc = mesh.getPointLocation(goal)
+      tLocateTotal += performance.now() - tLoc0
+
       if (startLoc.poly1 >= 0 && goalLoc.poly1 >= 0 &&
           !mesh.sameIsland(startLoc.poly1, goalLoc.poly1)) {
         failDiffIsland++
@@ -447,9 +460,19 @@ export function routeAllTraces(
         continue
       }
 
+      const tSearch0 = performance.now()
       const si = new SearchInstance(mesh)
+      si.timeLimitMs = 50 // 50ms max per search — fail fast for interactive use
       si.setStartGoal(start, goal)
       const found = si.search()
+      const searchMs = performance.now() - tSearch0
+      tSearchTotal += searchMs
+
+      if (searchMs > maxSearchMs) {
+        maxSearchMs = searchMs
+        maxSearchConn = conn.id
+        maxNodesPopped = si.nodesPopped
+      }
 
       if (found) {
         const pathCore = si.getPathPoints()
@@ -486,16 +509,18 @@ export function routeAllTraces(
   meshDebug.lastRerouteAttempts = attempts
   meshDebug.lastRerouteSuccesses = successes
 
-  if (meshDebug.frameCount <= 2 || meshDebug.frameCount % 60 === 0) {
+  const totalMs = tDone - t0
+  // Log every call when slow (>10ms), otherwise every 60 frames
+  if (totalMs > 10 || meshDebug.frameCount <= 2 || meshDebug.frameCount % 60 === 0) {
     const meshMs = (tMesh - t0).toFixed(1)
-    const searchMs = (tDone - tMesh).toFixed(1)
-    const totalMs = (tDone - t0).toFixed(1)
     const layers = [...meshCache.keys()]
     const polyCount = layers.map(l => meshCache.get(l)?.mesh?.polygons?.length ?? 0)
     console.log(
-      `[meshManager] ${successes}/${attempts} routed | ` +
-      `mesh: ${meshMs}ms (${meshDebug.lastCdtRegions} CDT→${meshDebug.lastRawMeshPolygons} raw→${polyCount.join("/")} merged) | ` +
-      `search: ${searchMs}ms | total: ${totalMs}ms | ` +
+      `[meshManager] f${meshDebug.frameCount} ${successes}/${attempts} routed | ` +
+      `mesh: ${meshMs}ms (${polyCount.join("/")} polys) | ` +
+      `snap: ${tSnapTotal.toFixed(1)}ms | locate: ${tLocateTotal.toFixed(1)}ms | ` +
+      `search: ${tSearchTotal.toFixed(1)}ms (worst: ${maxSearchMs.toFixed(1)}ms/${maxNodesPopped}nodes "${maxSearchConn}") | ` +
+      `total: ${totalMs.toFixed(1)}ms | ` +
       `fail: noMesh=${failNoMesh} noSnap=${failNoSnap} island=${failDiffIsland} noPath=${failNoPath} exc=${failException}`
     )
   }
