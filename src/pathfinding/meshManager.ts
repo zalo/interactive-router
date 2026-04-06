@@ -5,7 +5,7 @@
  * On component move → rebake CDT from pad footprints → merge convex regions → route all traces.
  */
 
-import type { ComponentData, PlacementState, RoutedTrace, BoardData, Point, ConnectionData } from "../types"
+import type { ComponentData, PlacementState, RoutedTrace, BoardData, Point, ConnectionData, PadData } from "../types"
 import { cdtTriangulate } from "../lib/polyanya/index"
 import { buildMeshFromRegions } from "../lib/polyanya/index"
 import { mergeMesh } from "../lib/polyanya/index"
@@ -13,7 +13,66 @@ import { SearchInstance } from "../lib/polyanya/index"
 import { getWorldPadPosition } from "../state/store"
 import { PointLocationType } from "../lib/polyanya/types"
 
-const PAD_CLEARANCE = 0.15 // mm clearance around pads
+const PAD_CLEARANCE = 0.15 // mm max clearance around pads
+const MIN_CLEARANCE = 0.02 // mm minimum so obstacles don't degenerate
+const GAP_MARGIN = 0.04    // mm kept free between expanded obstacles so traces can pass
+
+// ─── Per-pad clearance cache (computed once per component) ───────────
+
+/** Cache: componentId → Map<padId, clearance> */
+const padClearanceCache = new Map<string, Map<string, number>>()
+
+/**
+ * Compute per-pad clearance for all pads in a component, using local-space
+ * edge-to-edge distances between same-component pads. Rotation-invariant
+ * since local coords don't change.
+ *
+ * clearance = min(PAD_CLEARANCE, (gap - GAP_MARGIN) / 2)
+ * clamped to [MIN_CLEARANCE, PAD_CLEARANCE]
+ */
+function getPadClearances(comp: ComponentData): Map<string, number> {
+  const cached = padClearanceCache.get(comp.id)
+  if (cached) return cached
+
+  const pads = comp.pads
+  // Build local-space (unrotated) rectangles for each pad
+  const localPolys = pads.map(pad => localRect(pad))
+
+  const clearances = new Map<string, number>()
+  for (let i = 0; i < pads.length; i++) {
+    let minGap = Infinity
+    for (let j = 0; j < pads.length; j++) {
+      if (i === j) continue
+      const d = polyPolyDist(localPolys[i]!, localPolys[j]!)
+      if (d < minGap) minGap = d
+    }
+    // Leave GAP_MARGIN of free space so the gap between obstacles is navigable
+    const clearance = Math.max(MIN_CLEARANCE, Math.min(PAD_CLEARANCE, (minGap - GAP_MARGIN) / 2))
+    clearances.set(pads[i]!.id, clearance)
+  }
+
+  padClearanceCache.set(comp.id, clearances)
+  return clearances
+}
+
+/** Axis-aligned rect polygon for a pad in local (component) space. */
+function localRect(pad: PadData): { x: number; y: number }[] {
+  const hw = pad.width / 2
+  const hh = pad.height / 2
+  return [
+    { x: pad.localX - hw, y: pad.localY - hh },
+    { x: pad.localX + hw, y: pad.localY - hh },
+    { x: pad.localX + hw, y: pad.localY + hh },
+    { x: pad.localX - hw, y: pad.localY + hh },
+  ]
+}
+
+/** Call when components change (e.g. new circuit loaded). */
+export function clearPadClearanceCache() {
+  padClearanceCache.clear()
+}
+
+// ─── Geometry helpers ────────────────────────────────────────────────
 
 /** Create a rotated rectangle polygon (4 corners CCW) */
 function rotatedRectPolygon(
@@ -38,8 +97,6 @@ function rotatedRectPolygon(
 
 /**
  * Clip a polygon's vertices to stay within bounds.
- * Simple vertex clamping — not true polygon clipping, but sufficient
- * to prevent CDT degeneration from out-of-bounds constraint edges.
  */
 function clipObstacleToBounds(
   poly: { x: number; y: number }[],
@@ -72,7 +129,6 @@ function segSegDist(
   p1: { x: number; y: number }, p2: { x: number; y: number },
   p3: { x: number; y: number }, p4: { x: number; y: number },
 ): number {
-  // Check all 4 point-to-segment projections + segment intersection
   return Math.min(
     ptSegDist(p1, p3, p4),
     ptSegDist(p2, p3, p4),
@@ -94,6 +150,8 @@ function ptSegDist(
   return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy))
 }
 
+// ─── Debug state ─────────────────────────────────────────────────────
+
 export const meshDebug = {
   lastMeshObstacles: 0,
   lastRerouteAttempts: 0,
@@ -105,7 +163,6 @@ export const meshDebug = {
   autorouterBaseObstacles: [] as Array<{ x: number; y: number }[]>,
   autorouterTraceObstacles: [] as Array<{ x: number; y: number }[]>,
   autorouterMeshPolygons: [] as Array<{ vertices: { x: number; y: number }[]; blocked: boolean; obstacleIndex: number }>,
-  // CDT diagnostics
   lastCdtRegions: 0,
   lastRawMeshPolygons: 0,
   lastMergedPolygons: 0,
@@ -113,6 +170,8 @@ export const meshDebug = {
 
 export function invalidateAllMeshes() {}
 export function invalidateLayerMesh(_layer: string) {}
+
+// ─── Mesh building ───────────────────────────────────────────────────
 
 /** Force build a mesh for debug viewing */
 export function buildDebugMesh(
@@ -125,8 +184,6 @@ export function buildDebugMesh(
   const { mesh, obstacles } = buildPadOnlyMesh(layer, board, components, placements)
   if (mesh) {
     meshDebug.lastObstaclePolygons = obstacles
-    // All merged mesh polygons are navigable (obstacles are filtered out by CDT).
-    // Mark them as not-blocked so the renderer shows them clearly.
     meshDebug.lastMeshPolygons = mesh.polygons.map((poly: any) => ({
       vertices: poly.vertices.map((vi: number) => ({
         x: mesh.vertices[vi].p.x,
@@ -140,9 +197,7 @@ export function buildDebugMesh(
 
 /**
  * Build a single navigation mesh from ALL pad obstacles.
- * No per-connection exclusion — one mesh for everything.
- * Clearance per pad is capped at half the distance to the nearest other pad
- * so that adjacent obstacles never merge into a wall.
+ * Uses precomputed per-pad clearance (same-component edge-to-edge gaps).
  */
 function buildPadOnlyMesh(
   layer: string,
@@ -154,8 +209,7 @@ function buildPadOnlyMesh(
   const halfH = board.height / 2
   const bounds = { minX: -halfW - 1, maxX: halfW + 1, minY: -halfH - 1, maxY: halfH + 1 }
 
-  // First pass: compute world positions of all pads on this layer
-  const padInfos: { wx: number; wy: number; pw: number; ph: number; rad: number; compId: string }[] = []
+  const obstacles: Array<{ x: number; y: number }[]> = []
 
   for (const [compId, comp] of components) {
     const placement = placements.get(compId)
@@ -164,47 +218,20 @@ function buildPadOnlyMesh(
     const rad = (placement.rotation * Math.PI) / 180
     const cos = Math.cos(rad)
     const sin = Math.sin(rad)
+    const clearances = getPadClearances(comp)
 
     for (const pad of comp.pads) {
       const padLayers = pad.layers || [pad.layer]
       if (!padLayers.includes(layer)) continue
 
-      padInfos.push({
-        wx: placement.x + pad.localX * cos - pad.localY * sin,
-        wy: placement.y + pad.localX * sin + pad.localY * cos,
-        pw: pad.width,
-        ph: pad.height,
-        rad,
-        compId,
-      })
+      const wx = placement.x + pad.localX * cos - pad.localY * sin
+      const wy = placement.y + pad.localX * sin + pad.localY * cos
+      const clearance = clearances.get(pad.id) ?? PAD_CLEARANCE
+
+      let poly = rotatedRectPolygon(wx, wy, pad.width, pad.height, rad, clearance)
+      poly = clipObstacleToBounds(poly, bounds)
+      obstacles.push(poly)
     }
-  }
-
-  // Second pass: build base (zero-clearance) polygons, then measure edge-to-edge gaps
-  const basPolys = padInfos.map(pi =>
-    rotatedRectPolygon(pi.wx, pi.wy, pi.pw, pi.ph, pi.rad, 0)
-  )
-
-  const MIN_CLEARANCE = 0.02 // minimum so obstacles don't degenerate
-  const obstacles: Array<{ x: number; y: number }[]> = []
-
-  for (let i = 0; i < padInfos.length; i++) {
-    const pi = padInfos[i]!
-
-    // Find minimum edge-to-edge gap to any other pad polygon
-    let minGap = Infinity
-    for (let j = 0; j < padInfos.length; j++) {
-      if (i === j) continue
-      const d = polyPolyDist(basPolys[i]!, basPolys[j]!)
-      if (d < minGap) minGap = d
-    }
-
-    // Clearance = min(desired, halfGap) so expanded obstacles never merge
-    const clearance = Math.max(MIN_CLEARANCE, Math.min(PAD_CLEARANCE, minGap / 2))
-
-    let poly = rotatedRectPolygon(pi.wx, pi.wy, pi.pw, pi.ph, pi.rad, clearance)
-    poly = clipObstacleToBounds(poly, bounds)
-    obstacles.push(poly)
   }
 
   try {
@@ -222,7 +249,6 @@ function buildPadOnlyMesh(
     const mesh = mergeMesh(rawMesh)
     meshDebug.lastMergedPolygons = mesh.polygons.length
 
-    // Warn when mesh is suspiciously small
     if (mesh.polygons.length <= 5 && obstacles.length > 5) {
       console.warn(
         `[meshManager] Mesh collapsed: ${obstacles.length} obstacles → ` +
@@ -238,10 +264,11 @@ function buildPadOnlyMesh(
   }
 }
 
+// ─── Point snapping ──────────────────────────────────────────────────
+
 /**
  * Snap a point that's inside an obstacle (off-mesh) to the nearest
  * navigable point on the mesh boundary.
- * Scans all mesh polygon edges and finds the closest projection.
  */
 function snapToMesh(mesh: any, p: Point): Point | null {
   let bestDist = Infinity
@@ -255,7 +282,6 @@ function snapToMesh(mesh: any, p: Point): Point | null {
       const a = mesh.vertices[ai].p
       const b = mesh.vertices[bi].p
 
-      // Project p onto segment a-b
       const dx = b.x - a.x
       const dy = b.y - a.y
       const lenSq = dx * dx + dy * dy
@@ -275,6 +301,15 @@ function snapToMesh(mesh: any, p: Point): Point | null {
 
   return bestPoint
 }
+
+/** If the point is on the mesh, return it. Otherwise snap to nearest mesh edge. */
+function resolveOrSnap(mesh: any, p: Point): Point | null {
+  const loc = mesh.getPointLocation(p)
+  if (loc.type !== PointLocationType.NOT_ON_MESH) return p
+  return snapToMesh(mesh, p)
+}
+
+// ─── Pathfinding ─────────────────────────────────────────────────────
 
 /**
  * Find a path between two points on a pad-only mesh.
@@ -316,16 +351,6 @@ export function findPath(
     meshDebug.lastError = `exception: ${e.message?.slice(0, 80) || e}`
     return null
   }
-}
-
-/**
- * If the point is on the mesh, return it as-is.
- * If it's off-mesh (inside an obstacle), snap to nearest mesh edge.
- */
-function resolveOrSnap(mesh: any, p: Point): Point | null {
-  const loc = mesh.getPointLocation(p)
-  if (loc.type !== PointLocationType.NOT_ON_MESH) return p
-  return snapToMesh(mesh, p)
 }
 
 /**
@@ -392,7 +417,6 @@ export function routeAllTraces(
       continue
     }
 
-    // Snap start/goal to mesh if they're inside obstacles
     const start = resolveOrSnap(mesh, startRaw)
     const goal = resolveOrSnap(mesh, goalRaw)
     if (!start || !goal) {
@@ -402,7 +426,6 @@ export function routeAllTraces(
     }
 
     try {
-      // Check island connectivity before searching
       const startLoc = mesh.getPointLocation(start)
       const goalLoc = mesh.getPointLocation(goal)
       if (startLoc.poly1 >= 0 && goalLoc.poly1 >= 0 &&
@@ -451,7 +474,6 @@ export function routeAllTraces(
   meshDebug.lastRerouteAttempts = attempts
   meshDebug.lastRerouteSuccesses = successes
 
-  // Log diagnostics
   if (meshDebug.frameCount <= 2 || meshDebug.frameCount % 60 === 0) {
     const meshMs = (tMesh - t0).toFixed(1)
     const searchMs = (tDone - tMesh).toFixed(1)

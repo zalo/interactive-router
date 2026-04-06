@@ -11,6 +11,7 @@ import type {
   Point,
 } from "../types"
 import { parseCircuitJson, type ParsedCircuit } from "./circuitParser"
+import { clearPadClearanceCache } from "../pathfinding/meshManager"
 import { pack, type PackInput, type PackOutput, type InputComponent } from "calculate-packing"
 
 export interface AppState {
@@ -305,6 +306,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   loadCircuit(circuitJson) {
     const parsed = parseCircuitJson(circuitJson)
+    clearPadClearanceCache()
 
     // Use original component positions from the circuit file
     const placements = new Map<string, PlacementState>()
