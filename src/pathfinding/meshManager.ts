@@ -409,30 +409,79 @@ export function routeAllTraces(
   let maxSearchConn = ""
   let maxNodesPopped = 0
 
+  // Expand multi-endpoint connections into point pairs via simple MST
+  const pairs: { connId: string; ep1: ConnectionEndpoint; ep2: ConnectionEndpoint; layer: string }[] = []
+
   for (const conn of connections) {
     if (conn.endpoints.length < 2) {
-      unrouted.add(conn.id)
+      unrouted.add(connId)
       continue
     }
 
-    attempts++
+    if (conn.endpoints.length === 2) {
+      // Simple pair
+      pairs.push({
+        connId: conn.id,
+        ep1: conn.endpoints[0]!,
+        ep2: conn.endpoints[1]!,
+        layer: conn.endpoints[0]!.layer || "top",
+      })
+    } else {
+      // Multi-endpoint net: build MST to get N-1 pairs
+      // Resolve world positions
+      const epPos: { ep: ConnectionEndpoint; pos: Point }[] = []
+      for (const ep of conn.endpoints) {
+        const pos = getWorldPadPosition(components, placements, ep.componentId, ep.padId)
+        if (pos) epPos.push({ ep, pos })
+      }
+      if (epPos.length < 2) {
+        unrouted.add(connId)
+        continue
+      }
 
-    const ep1 = conn.endpoints[0]!
-    const ep2 = conn.endpoints[conn.endpoints.length - 1]!
+      // Prim's MST — simple O(n²), fine for small endpoint counts
+      const inMST = new Uint8Array(epPos.length)
+      inMST[0] = 1
+      let added = 1
+      while (added < epPos.length) {
+        let bestI = -1, bestJ = -1, bestDist = Infinity
+        for (let i = 0; i < epPos.length; i++) {
+          if (!inMST[i]) continue
+          for (let j = 0; j < epPos.length; j++) {
+            if (inMST[j]) continue
+            const d = Math.hypot(epPos[i]!.pos.x - epPos[j]!.pos.x, epPos[i]!.pos.y - epPos[j]!.pos.y)
+            if (d < bestDist) { bestDist = d; bestI = i; bestJ = j }
+          }
+        }
+        if (bestJ === -1) break
+        inMST[bestJ] = 1
+        added++
+        pairs.push({
+          connId: `${conn.id}_mst${added - 1}`,
+          ep1: epPos[bestI]!.ep,
+          ep2: epPos[bestJ]!.ep,
+          layer: epPos[bestI]!.ep.layer || "top",
+        })
+      }
+    }
+  }
+
+  for (const pair of pairs) {
+    attempts++
+    const { connId, ep1, ep2, layer } = pair
 
     const startRaw = getWorldPadPosition(components, placements, ep1.componentId, ep1.padId)
     const goalRaw = getWorldPadPosition(components, placements, ep2.componentId, ep2.padId)
     if (!startRaw || !goalRaw) {
-      unrouted.add(conn.id)
+      unrouted.add(connId)
       continue
     }
 
-    const layer = ep1.layer || "top"
     const { mesh } = getMesh(layer)
 
     if (!mesh) {
       failNoMesh++
-      unrouted.add(conn.id)
+      unrouted.add(connId)
       continue
     }
 
@@ -443,7 +492,7 @@ export function routeAllTraces(
 
     if (!start || !goal) {
       failNoSnap++
-      unrouted.add(conn.id)
+      unrouted.add(connId)
       continue
     }
 
@@ -456,7 +505,7 @@ export function routeAllTraces(
       if (startLoc.poly1 >= 0 && goalLoc.poly1 >= 0 &&
           !mesh.sameIsland(startLoc.poly1, goalLoc.poly1)) {
         failDiffIsland++
-        unrouted.add(conn.id)
+        unrouted.add(connId)
         continue
       }
 
@@ -470,7 +519,7 @@ export function routeAllTraces(
 
       if (searchMs > maxSearchMs) {
         maxSearchMs = searchMs
-        maxSearchConn = conn.id
+        maxSearchConn = connId
         maxNodesPopped = si.nodesPopped
       }
 
@@ -483,8 +532,8 @@ export function routeAllTraces(
           if (goal !== goalRaw) path.push(goalRaw)
 
           successes++
-          traces.set(conn.id, {
-            connectionId: conn.id,
+          traces.set(connId, {
+            connectionId: connId,
             segments: [{
               points: path,
               layer,
@@ -498,10 +547,10 @@ export function routeAllTraces(
       failNoPath++
     } catch (e: any) {
       failException++
-      meshDebug.lastError = `route ${conn.id}: ${e.message?.slice(0, 60) || e}`
+      meshDebug.lastError = `route ${connId}: ${e.message?.slice(0, 60) || e}`
     }
 
-    unrouted.add(conn.id)
+    unrouted.add(connId)
   }
 
   const tDone = performance.now()
