@@ -429,17 +429,19 @@ function rebuildMesh(
       return Math.atan2(cA.y - v.p.y, cA.x - v.p.x) - Math.atan2(cB.y - v.p.y, cB.x - v.p.x)
     })
 
+    // Count obstacle-boundary transitions around the vertex's polygon fan
     let isCorner = false, isAmbig = false
-    for (const pi of polys) {
-      const poly = polygons[pi]!
-      const idx = poly.vertices.indexOf(newVi)
-      if (idx === -1) continue
-      const N = poly.vertices.length
-      const enterAdj = poly.polygons[idx]!
-      const leaveAdj = poly.polygons[(idx + 1) % N]!
-      if (enterAdj === -1 || leaveAdj === -1) {
-        if (isCorner) isAmbig = true; else isCorner = true
+    if (polys.length > 0) {
+      const hasMinusOne = polys.includes(-1)
+      const ois: number[] = polys.map(pi =>
+        pi === -1 ? -2 : (polygons[pi]!.obstacleIndex)
+      )
+      let transitions = 0
+      for (let k = 0; k < ois.length; k++) {
+        if (ois[k] !== ois[(k + 1) % ois.length]) transitions++
       }
+      if (hasMinusOne || transitions > 0) isCorner = true
+      if (transitions > 2) isAmbig = true
     }
 
     return { p: { x: v.p.x, y: v.p.y }, polygons: polys, isCorner, isAmbig }

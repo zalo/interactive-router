@@ -148,23 +148,30 @@ export function buildMeshFromRegions(input: MeshBuilderInput): Mesh {
       return angleA - angleB
     })
 
-    // Determine corner status by checking if any adjacent edge is a mesh boundary (-1).
-    // Obstacle boundaries are handled dynamically by the search (remapping blocked
-    // polygons to -1 in succToNode), so they don't affect static corner status.
+    // Determine corner/ambig by counting obstacle-boundary transitions around the
+    // vertex's polygon fan. A transition = consecutive polygons with different
+    // obstacleIndex (or -1 boundary). Transitions come in pairs (enter+leave gap),
+    // so >0 = corner, >2 = ambiguous (multiple gaps).
     let isCorner = false
     let isAmbig = false
 
-    for (let pi of polys) {
-      const poly = polygons[pi]!
-      const idx = poly.vertices.indexOf(vi)
-      if (idx === -1) continue
-      const N = poly.vertices.length
-      const prevEdgeAdj = poly.polygons[(idx + N - 1) % N]!
-      const nextEdgeAdj = poly.polygons[idx]!
-      if (prevEdgeAdj === -1 || nextEdgeAdj === -1) {
-        if (isCorner) isAmbig = true
-        else isCorner = true
+    if (polys.length > 0) {
+      // Check for any -1 in the polygon fan (mesh boundary)
+      const hasMinusOne = polys.includes(-1)
+
+      // Build circular list of obstacleIndex values (-1 for boundary, or actual index)
+      const ois: number[] = polys.map(pi =>
+        pi === -1 ? -2 : (polygons[pi]!.obstacleIndex)  // use -2 for mesh boundary to distinguish from free space -1
+      )
+
+      // Count transitions in circular fan
+      let transitions = 0
+      for (let k = 0; k < ois.length; k++) {
+        if (ois[k] !== ois[(k + 1) % ois.length]) transitions++
       }
+
+      if (hasMinusOne || transitions > 0) isCorner = true
+      if (transitions > 2) isAmbig = true
     }
 
     return {
