@@ -275,6 +275,13 @@ function buildPadOnlyMesh(
     const mesh = mergeMesh(rawMesh)
     meshDebug.lastMergedPolygons = mesh.polygons.length
 
+    // Diagnostic: count corners
+    const cornerCount = mesh.vertices.filter((v: any) => v.isCorner).length
+    const ambigCount = mesh.vertices.filter((v: any) => v.isAmbig).length
+    if (meshDebug.frameCount <= 2) {
+      console.log(`[meshManager] mesh: ${mesh.polygons.length} polys, ${mesh.vertices.length} verts, ${cornerCount} corners, ${ambigCount} ambig`)
+    }
+
     return { mesh, obstacles, padIdToObstacle, compIdToObstacles }
   } catch (e) {
     meshDebug.lastError = `mesh build failed: ${e}`
