@@ -63,16 +63,21 @@ export function App() {
       }
     }
 
+    /** Reroute all traces from current placements. */
+    function rerouteAll() {
+      const s = useAppStore.getState()
+      if (s.connections.length === 0) return
+      const { traces, unrouted } = routeAllTraces(s.board, s.components, s.placements, s.connections)
+      s.setRoutedTraces(traces, unrouted)
+    }
+
     cleanupRef.current = setupInputHandlers(
       canvas,
       inputStateRef.current,
       getCC,
       () => {
-        // On drag end: rebuild debug mesh with full obstacles (no exclusions)
-        const s = useAppStore.getState()
-        if (s.debugView !== "normal") {
-          buildDebugMesh("top", s.board, s.components, s.placements, s.routedTraces)
-        }
+        // On drag end: reroute all traces (component was moved/rotated)
+        rerouteAll()
       },
     )
 
@@ -158,6 +163,15 @@ export function App() {
     console.log(`[autorouter] ${traces.size} routed, ${unrouted.size} unrouted, ${elapsed.toFixed(0)}ms`)
     state.setMode("interactive")
   }, [mode])
+
+  // Reroute traces when placements change (repack/randomize)
+  useEffect(() => {
+    if (!initialized || placementVersion === 0) return
+    const state = useAppStore.getState()
+    if (state.connections.length === 0) return
+    const { traces, unrouted } = routeAllTraces(state.board, state.components, state.placements, state.connections)
+    state.setRoutedTraces(traces, unrouted)
+  }, [initialized, placementVersion])
 
   // Rebuild debug mesh when debug view changes
   useEffect(() => {
