@@ -1,4 +1,4 @@
-import type { Point } from "polyanya"
+import type { Point } from "../../../polyanya/types"
 
 interface AABB {
   minX: number

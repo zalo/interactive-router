@@ -30,9 +30,7 @@ export async function runAutorouter(
   console.log("[autorouter] Module loaded, exports:", Object.keys(mod).filter(k => k.includes("Greedy") || k.includes("Pipeline")).join(", "))
   console.log("[autorouter] SRJ:", srj.connections.length, "connections,", srj.obstacles.length, "obstacles")
 
-  const solver = new GreedySequentialPipelineSolver(srj, {
-    useOccupancyToggle: false, // rebuild CDT per-connection for more accurate exclusion
-  })
+  const solver = new GreedySequentialPipelineSolver(srj, {})
   const startTime = performance.now()
   console.log("[autorouter] Solver created, starting...")
 
@@ -91,7 +89,7 @@ function extractResult(
   elapsedMs: number,
 ): AutorouterResult {
   const traces = new Map<string, RoutedTrace>()
-  const allConnectionNames = new Set(srj.connections.map((c: any) => c.name))
+  const allConnectionNames = new Set<string>(srj.connections.map((c: any) => c.name))
 
   // Try to extract traces - from output solver if complete, or directly from greedy solver paths
   let pcbTraces: any[] = []

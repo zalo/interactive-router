@@ -285,7 +285,7 @@ function buildPadOnlyMesh(
     return { mesh, obstacles, padIdToObstacle, compIdToObstacles }
   } catch (e) {
     meshDebug.lastError = `mesh build failed: ${e}`
-    return { mesh: null, obstacles, padIdToObstacle }
+    return { mesh: null, obstacles, padIdToObstacle, compIdToObstacles }
   }
 }
 
