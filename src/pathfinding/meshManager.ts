@@ -434,7 +434,7 @@ export function routeAllTraces(
       continue
     }
 
-    const { mesh, compIdToObstacles } = getMesh(layer)
+    const { mesh, padIdToObstacle } = getMesh(layer)
 
     if (!mesh) {
       failNoMesh++
@@ -442,11 +442,12 @@ export function routeAllTraces(
       continue
     }
 
-    // Build ignore set: ALL pad obstacles on the start and end components
-    // so the trace can navigate freely through/around the component's pads
+    // Ignore only the start and end pad obstacles
     const ignoreObstacles = new Set<number>()
-    for (const oi of compIdToObstacles.get(ep1.componentId) ?? []) ignoreObstacles.add(oi)
-    for (const oi of compIdToObstacles.get(ep2.componentId) ?? []) ignoreObstacles.add(oi)
+    const oi1 = padIdToObstacle.get(ep1.padId)
+    const oi2 = padIdToObstacle.get(ep2.padId)
+    if (oi1 !== undefined) ignoreObstacles.add(oi1)
+    if (oi2 !== undefined) ignoreObstacles.add(oi2)
 
     try {
       const tSearch0 = performance.now()
