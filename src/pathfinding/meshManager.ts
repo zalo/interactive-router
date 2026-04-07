@@ -208,6 +208,8 @@ interface MeshResult {
   obstacles: Array<{ x: number; y: number }[]>
   /** Maps padId → obstacle index in the CDT */
   padIdToObstacle: Map<string, number>
+  /** Maps componentId → all obstacle indices for that component's pads */
+  compIdToObstacles: Map<string, number[]>
 }
 
 /**
@@ -227,6 +229,7 @@ function buildPadOnlyMesh(
 
   const obstacles: Array<{ x: number; y: number }[]> = []
   const padIdToObstacle = new Map<string, number>()
+  const compIdToObstacles = new Map<string, number[]>()
 
   for (const [compId, comp] of components) {
     const placement = placements.get(compId)
@@ -248,6 +251,9 @@ function buildPadOnlyMesh(
       const obstacleIdx = obstacles.length
       padIdToObstacle.set(pad.id, obstacleIdx)
 
+      if (!compIdToObstacles.has(compId)) compIdToObstacles.set(compId, [])
+      compIdToObstacles.get(compId)!.push(obstacleIdx)
+
       let poly = rotatedRectPolygon(wx, wy, pad.width, pad.height, rad, clearance)
       poly = clipObstacleToBounds(poly, bounds)
       obstacles.push(poly)
@@ -261,7 +267,7 @@ function buildPadOnlyMesh(
 
     if (cdtResult.regions.length === 0) {
       console.warn(`[meshManager] CDT produced 0 regions from ${obstacles.length} obstacles — CDT failed`)
-      return { mesh: null, obstacles, padIdToObstacle }
+      return { mesh: null, obstacles, padIdToObstacle, compIdToObstacles }
     }
 
     const rawMesh = buildMeshFromRegions(cdtResult)
@@ -269,7 +275,7 @@ function buildPadOnlyMesh(
     const mesh = mergeMesh(rawMesh)
     meshDebug.lastMergedPolygons = mesh.polygons.length
 
-    return { mesh, obstacles, padIdToObstacle }
+    return { mesh, obstacles, padIdToObstacle, compIdToObstacles }
   } catch (e) {
     meshDebug.lastError = `mesh build failed: ${e}`
     return { mesh: null, obstacles, padIdToObstacle }
@@ -428,7 +434,7 @@ export function routeAllTraces(
       continue
     }
 
-    const { mesh, padIdToObstacle } = getMesh(layer)
+    const { mesh, compIdToObstacles } = getMesh(layer)
 
     if (!mesh) {
       failNoMesh++
@@ -436,12 +442,11 @@ export function routeAllTraces(
       continue
     }
 
-    // Build ignore set: obstacle indices for start and end pads
+    // Build ignore set: ALL pad obstacles on the start and end components
+    // so the trace can navigate freely through/around the component's pads
     const ignoreObstacles = new Set<number>()
-    const oi1 = padIdToObstacle.get(ep1.padId)
-    const oi2 = padIdToObstacle.get(ep2.padId)
-    if (oi1 !== undefined) ignoreObstacles.add(oi1)
-    if (oi2 !== undefined) ignoreObstacles.add(oi2)
+    for (const oi of compIdToObstacles.get(ep1.componentId) ?? []) ignoreObstacles.add(oi)
+    for (const oi of compIdToObstacles.get(ep2.componentId) ?? []) ignoreObstacles.add(oi)
 
     try {
       const tSearch0 = performance.now()
