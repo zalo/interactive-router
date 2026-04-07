@@ -27,6 +27,7 @@
     "rbush": "^4.0.1",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
+    "robust-predicates": "^3.0.3",
     "transformation-matrix": "^3.1.0",
     "zod": "^4.3.6",
     "zustand": "^5.0.0"
