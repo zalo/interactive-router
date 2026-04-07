@@ -227,9 +227,8 @@ function buildPadOnlyMesh(
   const halfH = board.height / 2
   const bounds = { minX: -halfW - 1, maxX: halfW + 1, minY: -halfH - 1, maxY: halfH + 1 }
 
-  const obstacles: Array<{ x: number; y: number }[]> = []
-  const padIdToObstacle = new Map<string, number>()
-  const compIdToObstacles = new Map<string, number[]>()
+  // First pass: collect all pad world positions with cached same-component clearances
+  const padEntries: { padId: string; compId: string; wx: number; wy: number; pw: number; ph: number; rad: number; clearance: number }[] = []
 
   for (const [compId, comp] of components) {
     const placement = placements.get(compId)
@@ -244,20 +243,57 @@ function buildPadOnlyMesh(
       const padLayers = pad.layers || [pad.layer]
       if (!padLayers.includes(layer)) continue
 
-      const wx = placement.x + pad.localX * cos - pad.localY * sin
-      const wy = placement.y + pad.localX * sin + pad.localY * cos
-      const clearance = clearances.get(pad.id) ?? PAD_CLEARANCE
-
-      const obstacleIdx = obstacles.length
-      padIdToObstacle.set(pad.id, obstacleIdx)
-
-      if (!compIdToObstacles.has(compId)) compIdToObstacles.set(compId, [])
-      compIdToObstacles.get(compId)!.push(obstacleIdx)
-
-      let poly = rotatedRectPolygon(wx, wy, pad.width, pad.height, rad, clearance)
-      poly = clipObstacleToBounds(poly, bounds)
-      obstacles.push(poly)
+      padEntries.push({
+        padId: pad.id,
+        compId,
+        wx: placement.x + pad.localX * cos - pad.localY * sin,
+        wy: placement.y + pad.localX * sin + pad.localY * cos,
+        pw: pad.width,
+        ph: pad.height,
+        rad,
+        clearance: clearances.get(pad.id) ?? PAD_CLEARANCE,
+      })
     }
+  }
+
+  // Second pass: further reduce clearance for cross-component neighbors
+  // Build zero-clearance polygons for edge-to-edge distance checks
+  const basePolys = padEntries.map(e => rotatedRectPolygon(e.wx, e.wy, e.pw, e.ph, e.rad, 0))
+
+  for (let i = 0; i < padEntries.length; i++) {
+    const pi = padEntries[i]!
+    for (let j = i + 1; j < padEntries.length; j++) {
+      const pj = padEntries[j]!
+      if (pi.compId === pj.compId) continue // same-component already handled by cache
+
+      // Quick AABB skip
+      const dx = Math.abs(pi.wx - pj.wx)
+      const dy = Math.abs(pi.wy - pj.wy)
+      const maxReach = pi.clearance + pj.clearance + 2 // generous estimate
+      if (dx > maxReach || dy > maxReach) continue
+
+      const gap = polyPolyDist(basePolys[i]!, basePolys[j]!)
+      const maxAllowed = (gap - GAP_MARGIN) / 2
+      if (maxAllowed < pi.clearance) pi.clearance = Math.max(MIN_CLEARANCE, maxAllowed)
+      if (maxAllowed < pj.clearance) pj.clearance = Math.max(MIN_CLEARANCE, maxAllowed)
+    }
+  }
+
+  // Third pass: build obstacle polygons
+  const obstacles: Array<{ x: number; y: number }[]> = []
+  const padIdToObstacle = new Map<string, number>()
+  const compIdToObstacles = new Map<string, number[]>()
+
+  for (const entry of padEntries) {
+    const obstacleIdx = obstacles.length
+    padIdToObstacle.set(entry.padId, obstacleIdx)
+
+    if (!compIdToObstacles.has(entry.compId)) compIdToObstacles.set(entry.compId, [])
+    compIdToObstacles.get(entry.compId)!.push(obstacleIdx)
+
+    let poly = rotatedRectPolygon(entry.wx, entry.wy, entry.pw, entry.ph, entry.rad, entry.clearance)
+    poly = clipObstacleToBounds(poly, bounds)
+    obstacles.push(poly)
   }
 
   try {
