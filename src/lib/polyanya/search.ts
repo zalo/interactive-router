@@ -117,6 +117,7 @@ export class SearchInstance {
   nodesPrunedPostPop = 0
   successorCalls = 0
   verbose = false
+  timedOut = false
 
   private goalless = false
 
@@ -443,6 +444,7 @@ export class SearchInstance {
     this.nodesPopped = 0
     this.nodesPrunedPostPop = 0
     this.successorCalls = 0
+    this.timedOut = false
     this.stepEvents = []
     this.setEndPolygon()
     this.startPolygon = this.resolvePointLocation(this.start).poly1
@@ -716,7 +718,8 @@ export class SearchInstance {
 
     while (this.openList.size > 0) {
       if (this.nodesPopped % 1000 === 0 && performance.now() > deadline) {
-        return false // timed out
+        this.timedOut = true
+        return false
       }
 
       const node = this.openList.pop()!

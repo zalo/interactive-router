@@ -484,6 +484,7 @@ export function routeAllTraces(
       failNoPath++
       // Log first few failures for debugging
       if (failNoPath <= 3) {
+        const reason = si.timedOut ? "TIMEOUT" : "EXHAUSTED"
         const startLoc = mesh.getPointLocation(startRaw)
         const goalLoc = mesh.getPointLocation(goalRaw)
         const startNaive = mesh.getPointLocationNaive(startRaw)
@@ -492,11 +493,11 @@ export function routeAllTraces(
         const goalPoly = goalLoc.poly1
         const startObs = startPoly >= 0 ? mesh.polygons[startPoly].obstacleIndex : "N/A"
         const goalObs = goalPoly >= 0 ? mesh.polygons[goalPoly].obstacleIndex : "N/A"
+        const endObs = si.mesh.polygons[mesh.getPointLocation(goalRaw).poly1]?.obstacleIndex ?? "?"
         console.warn(
-          `[meshManager] FAIL "${connId}": start=(${startRaw.x.toFixed(1)},${startRaw.y.toFixed(1)}) slab=${startLoc.type} naive=${startNaive.type}(poly=${startNaive.poly1}) | ` +
-          `goal=(${goalRaw.x.toFixed(1)},${goalRaw.y.toFixed(1)}) slab=${goalLoc.type} naive=${goalNaive.type}(poly=${goalNaive.poly1}) | ` +
-          `polys=${mesh.polygons.length} verts=${mesh.vertices.length} | ` +
-          `ignore=[${[...ignoreObstacles]}] nodes=${si.nodesPopped}/${si.nodesGenerated}`
+          `[meshManager] FAIL(${reason}) "${connId}": start=(${startRaw.x.toFixed(1)},${startRaw.y.toFixed(1)}) slab=${startLoc.type} naive=${startNaive.type}(poly=${startNaive.poly1}) | ` +
+          `goal=(${goalRaw.x.toFixed(1)},${goalRaw.y.toFixed(1)}) slab=${goalLoc.type} naive=${goalNaive.type}(poly=${goalNaive.poly1}) goalObs=${endObs} | ` +
+          `ignore=[${[...ignoreObstacles]}] nodes=${si.nodesPopped}/${si.nodesGenerated} pruned=${si.nodesPrunedPostPop}`
         )
       }
     } catch (e: any) {
