@@ -438,16 +438,14 @@ export function renderDebugMesh(ctx: CanvasRenderingContext2D, cc: CanvasContext
   for (const poly of polys) {
     if (poly.vertices.length < 3) continue
 
-    if (poly.blocked) {
-      ctx.fillStyle = "rgba(180, 40, 40, 0.25)"
-      ctx.strokeStyle = "rgba(180, 40, 40, 0.5)"
-    } else if (poly.obstacleIndex >= 0) {
-      ctx.fillStyle = "rgba(180, 120, 40, 0.15)"
-      ctx.strokeStyle = "rgba(180, 120, 40, 0.4)"
+    if (poly.obstacleIndex >= 0) {
+      // Occupied obstacle region — light red
+      ctx.fillStyle = "rgba(200, 60, 60, 0.2)"
+      ctx.strokeStyle = "rgba(200, 60, 60, 0.6)"
     } else {
-      // Navigable polygons — visible enough to debug mesh structure
-      ctx.fillStyle = "rgba(40, 120, 180, 0.15)"
-      ctx.strokeStyle = "rgba(40, 120, 180, 0.5)"
+      // Free navigable space — light blue
+      ctx.fillStyle = "rgba(40, 120, 180, 0.12)"
+      ctx.strokeStyle = "rgba(40, 120, 180, 0.4)"
     }
     ctx.lineWidth = 0.03
 

@@ -476,6 +476,20 @@ export function routeAllTraces(
         }
       }
       failNoPath++
+      // Log first few failures for debugging
+      if (failNoPath <= 3) {
+        const startLoc = mesh.getPointLocation(startRaw)
+        const goalLoc = mesh.getPointLocation(goalRaw)
+        const startPoly = startLoc.poly1
+        const goalPoly = goalLoc.poly1
+        const startObs = startPoly >= 0 ? mesh.polygons[startPoly].obstacleIndex : "N/A"
+        const goalObs = goalPoly >= 0 ? mesh.polygons[goalPoly].obstacleIndex : "N/A"
+        console.warn(
+          `[meshManager] FAIL "${connId}": start=(${startRaw.x.toFixed(1)},${startRaw.y.toFixed(1)}) loc=${startLoc.type} poly=${startPoly} obs=${startObs} | ` +
+          `goal=(${goalRaw.x.toFixed(1)},${goalRaw.y.toFixed(1)}) loc=${goalLoc.type} poly=${goalPoly} obs=${goalObs} | ` +
+          `ignore=[${[...ignoreObstacles]}] nodes=${si.nodesPopped}/${si.nodesGenerated} sameIsland=${startPoly >= 0 && goalPoly >= 0 ? mesh.sameIsland(startPoly, goalPoly) : "?"}`
+        )
+      }
     } catch (e: any) {
       failException++
       meshDebug.lastError = `route ${connId}: ${e.message?.slice(0, 60) || e}`
