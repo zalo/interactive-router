@@ -144,7 +144,9 @@ export function cdtTriangulate(input: {
   // very close points). Retry with progressively more jitter if it fails.
   let triangles: [number, number, number][]
   try {
-    triangles = cdt2d(resolved.pts, resolved.constraintEdges, { exterior: false })
+    // Don't use exterior:false — it treats obstacle rings as holes and removes
+    // their interior triangles. We want ALL triangles so obstacles have geometry.
+    triangles = cdt2d(resolved.pts, resolved.constraintEdges)
   } catch {
     // Retry with stronger random jitter on all non-bounds points
     const jitteredPts = resolved.pts.map((p, i) => {
@@ -155,7 +157,7 @@ export function cdtTriangulate(input: {
       ] as [number, number]
     })
     try {
-      triangles = cdt2d(jitteredPts, resolved.constraintEdges, { exterior: false })
+      triangles = cdt2d(jitteredPts, resolved.constraintEdges)
       // Update resolved.pts so downstream uses the jittered version
       for (let i = 0; i < jitteredPts.length; i++) {
         resolved.pts[i] = jitteredPts[i]!
@@ -166,7 +168,7 @@ export function cdtTriangulate(input: {
     }
   }
 
-  // --- Tag each triangle with its obstacle index (keep ALL triangles) ---
+  // --- Keep triangles inside the bounds, tag with obstacle index ---
   const rPts = resolved.pts
 
   const regions: Point[][] = []
@@ -174,6 +176,10 @@ export function cdtTriangulate(input: {
   const obstacleIndices: number[] = []
 
   for (const [a, b, c] of triangles) {
+    // Filter out triangles outside the bounds rectangle (centroid check)
+    const cxBounds = (rPts[a]![0] + rPts[b]![0] + rPts[c]![0]) / 3
+    const cyBounds = (rPts[a]![1] + rPts[b]![1] + rPts[c]![1]) / 3
+    if (cxBounds < minX || cxBounds > maxX || cyBounds < minY || cyBounds > maxY) continue
     const pa = { x: rPts[a]![0], y: rPts[a]![1] }
     const pb = { x: rPts[b]![0], y: rPts[b]![1] }
     const pc = { x: rPts[c]![0], y: rPts[c]![1] }
