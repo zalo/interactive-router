@@ -29,7 +29,7 @@ export function App() {
   useEffect(() => {
     async function load() {
       try {
-        const resp = await fetch("/rp2040base.circuit.json")
+        const resp = await fetch(`${import.meta.env.BASE_URL}rp2040base.circuit.json`)
         const json = await resp.json()
         useAppStore.getState().loadCircuit(json)
 
