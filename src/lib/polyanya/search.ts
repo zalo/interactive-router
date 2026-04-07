@@ -186,10 +186,16 @@ export class SearchInstance {
     const nodes: SearchNode[] = []
 
     for (const succ of successors) {
-      const nextPolygon = P[succ.polyLeftInd]!
+      let nextPolygon = P[succ.polyLeftInd]!
+
+      // Treat blocked obstacle polygons as boundary edges (-1)
+      // so the search generates proper turning corners around them
+      if (nextPolygon !== -1 && this.isBlocked(nextPolygon) && nextPolygon !== this.endPolygon) {
+        nextPolygon = -1
+      }
+
       if (nextPolygon === -1) {
-        // In goalless mode, non-observable successors at boundary edges still have
-        // their turning corner directly visible from source — record its g-value.
+        // Boundary edge (or blocked obstacle) — record turning corners in goalless mode
         if (this.goalless &&
           (succ.type === SuccessorType.RIGHT_NON_OBSERVABLE ||
            succ.type === SuccessorType.LEFT_NON_OBSERVABLE)
@@ -221,11 +227,6 @@ export class SearchInstance {
         this.mesh.polygons[nextPolygon]!.isOneWay &&
         nextPolygon !== this.endPolygon
       ) {
-        continue
-      }
-
-      // Skip occupied obstacle polygons not in the ignore list
-      if (this.isBlocked(nextPolygon) && nextPolygon !== this.endPolygon) {
         continue
       }
 
