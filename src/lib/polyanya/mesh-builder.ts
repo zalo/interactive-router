@@ -148,26 +148,20 @@ export function buildMeshFromRegions(input: MeshBuilderInput): Mesh {
       return angleA - angleB
     })
 
-    // Determine corner status by checking if any adjacent edge is a boundary
-    // or crosses an obstacle boundary (different obstacleIndex)
+    // Determine corner status by checking if any adjacent edge is a mesh boundary (-1).
+    // Obstacle boundaries are handled dynamically by the search (remapping blocked
+    // polygons to -1 in succToNode), so they don't affect static corner status.
     let isCorner = false
     let isAmbig = false
 
-    // Check edges incident to this vertex
     for (let pi of polys) {
       const poly = polygons[pi]!
       const idx = poly.vertices.indexOf(vi)
       if (idx === -1) continue
       const N = poly.vertices.length
-      // Check the edge before and after this vertex
       const prevEdgeAdj = poly.polygons[(idx + N - 1) % N]!
       const nextEdgeAdj = poly.polygons[idx]!
-      // An edge is a "boundary" if it's -1 OR crosses an obstacle boundary
-      const prevIsBoundary = prevEdgeAdj === -1 ||
-        polygons[prevEdgeAdj]!.obstacleIndex !== poly.obstacleIndex
-      const nextIsBoundary = nextEdgeAdj === -1 ||
-        polygons[nextEdgeAdj]!.obstacleIndex !== poly.obstacleIndex
-      if (prevIsBoundary || nextIsBoundary) {
+      if (prevEdgeAdj === -1 || nextEdgeAdj === -1) {
         if (isCorner) isAmbig = true
         else isCorner = true
       }

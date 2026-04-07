@@ -435,14 +435,9 @@ function rebuildMesh(
       const idx = poly.vertices.indexOf(newVi)
       if (idx === -1) continue
       const N = poly.vertices.length
-      // Edges incident to this vertex — boundary if -1 or crosses obstacle boundary
       const enterAdj = poly.polygons[idx]!
       const leaveAdj = poly.polygons[(idx + 1) % N]!
-      const enterIsBoundary = enterAdj === -1 ||
-        polygons[enterAdj]!.obstacleIndex !== poly.obstacleIndex
-      const leaveIsBoundary = leaveAdj === -1 ||
-        polygons[leaveAdj]!.obstacleIndex !== poly.obstacleIndex
-      if (enterIsBoundary || leaveIsBoundary) {
+      if (enterAdj === -1 || leaveAdj === -1) {
         if (isCorner) isAmbig = true; else isCorner = true
       }
     }
