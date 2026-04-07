@@ -435,6 +435,9 @@ export class SearchInstance {
     }
   }
 
+  /** Track expanded (root, polygon) pairs to prevent cycles with blocked obstacles */
+  private expandedPairs = new Set<number>()
+
   private initSearch(): void {
     this.searchId++
     this.openList.clear()
@@ -445,6 +448,7 @@ export class SearchInstance {
     this.nodesPrunedPostPop = 0
     this.successorCalls = 0
     this.timedOut = false
+    this.expandedPairs.clear()
     this.stepEvents = []
     this.setEndPolygon()
     this.startPolygon = this.resolvePointLocation(this.start).poly1
@@ -633,6 +637,14 @@ export class SearchInstance {
   }
 
   private expandAndPush(node: SearchNode): void {
+    // Cycle detection: skip if we already expanded this (root, polygon) pair
+    const pairKey = (node.root + 1) * 100000 + node.nextPolygon
+    if (this.expandedPairs.has(pairKey)) {
+      this.nodesPrunedPostPop++
+      return
+    }
+    this.expandedPairs.add(pairKey)
+
     let numNodes = 1
     let currentNodes: SearchNode[] = [{ ...node }]
     let currentParent: SearchNode = node
