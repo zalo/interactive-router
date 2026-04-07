@@ -205,6 +205,7 @@ export class Mesh {
         maxY: pMaxY,
         weight: 1.0,
         penalty: 0.0,
+        obstacleIndex: -1,
       }
     }
   }

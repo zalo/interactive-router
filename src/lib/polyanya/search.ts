@@ -120,6 +120,9 @@ export class SearchInstance {
 
   private goalless = false
 
+  /** Obstacle indices to treat as traversable (e.g. start/end pad obstacles) */
+  ignoreObstacles: Set<number> = new Set()
+
   // Step-through support
   private stepEvents: StepEvent[] = []
   private stepMode = false
@@ -128,6 +131,12 @@ export class SearchInstance {
     this.mesh = mesh
     this.rootGValues = new Array(mesh.vertices.length).fill(0)
     this.rootSearchIds = new Array(mesh.vertices.length).fill(0)
+  }
+
+  /** Check if a polygon is blocked (occupied obstacle not in ignore list) */
+  private isBlocked(polyIndex: number): boolean {
+    const oi = this.mesh.polygons[polyIndex]!.obstacleIndex
+    return oi >= 0 && !this.ignoreObstacles.has(oi)
   }
 
   /** Set start and goal points for the next search */
@@ -212,6 +221,11 @@ export class SearchInstance {
         this.mesh.polygons[nextPolygon]!.isOneWay &&
         nextPolygon !== this.endPolygon
       ) {
+        continue
+      }
+
+      // Skip occupied obstacle polygons not in the ignore list
+      if (this.isBlocked(nextPolygon) && nextPolygon !== this.endPolygon) {
         continue
       }
 

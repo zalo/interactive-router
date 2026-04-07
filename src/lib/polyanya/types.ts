@@ -34,6 +34,8 @@ export interface Polygon {
   weight: number
   /** Additive entry cost (default 0.0) */
   penalty: number
+  /** Obstacle index this polygon belongs to (-1 = free space) */
+  obstacleIndex: number
 }
 
 /** A weighted region that the pathfinder prefers to avoid but can traverse */
