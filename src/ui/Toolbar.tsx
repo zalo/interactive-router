@@ -10,6 +10,8 @@ export function Toolbar() {
   const autorouterProgress = useAppStore((s) => s.autorouterProgress)
   const debugView = useAppStore((s) => s.debugView)
   const setDebugView = useAppStore((s) => s.setDebugView)
+  const routerType = useAppStore((s) => s.routerType)
+  const setRouterType = useAppStore((s) => s.setRouterType)
 
   return (
     <>
@@ -102,6 +104,23 @@ export function Toolbar() {
           <option value="obstacles">Obstacle Map</option>
           <option value="mesh">CDT Mesh</option>
         </select>
+
+        {/* Router toggle */}
+        <div style={{ display: "flex", gap: 4, marginTop: 2 }}>
+          <button
+            onClick={() => setRouterType(routerType === "polyanya" ? "rubberband" : "polyanya")}
+            style={{
+              ...btnStyle,
+              flex: 1,
+              background: routerType === "rubberband" ? "#3a5a3a" : "#2a2a4a",
+              border: routerType === "rubberband" ? "1px solid #5a8a5a" : "1px solid #3a3a5c",
+            }}
+            onPointerEnter={(e) => { (e.target as HTMLElement).style.background = routerType === "rubberband" ? "#4a6a4a" : "#3a3a6a" }}
+            onPointerLeave={(e) => { (e.target as HTMLElement).style.background = routerType === "rubberband" ? "#3a5a3a" : "#2a2a4a" }}
+          >
+            {routerType === "rubberband" ? "Rubberband" : "Polyanya"}
+          </button>
+        </div>
 
         {/* Status */}
         {routedTraces.size > 0 && (

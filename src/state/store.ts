@@ -60,6 +60,7 @@ export interface AppState {
   // Settings
   componentMargin: number // mm of padding around components for trace routing
   debugView: "normal" | "obstacles" | "mesh" // render debug overlay
+  routerType: "polyanya" | "rubberband" // which router to use for real-time routing
 
   // Loading
   initialized: boolean
@@ -80,6 +81,7 @@ export interface AppState {
   setAutorouterProgress: (progress: number) => void
   setComponentMargin: (margin: number) => void
   setDebugView: (view: "normal" | "obstacles" | "mesh") => void
+  setRouterType: (type: "polyanya" | "rubberband") => void
   randomizePlacements: () => void
   resetToAutoPlacement: () => void
   recomputeMetrics: () => void
@@ -300,6 +302,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   autoPlacedPlacements: new Map(),
   componentMargin: 1.5,
   debugView: "normal" as const,
+  routerType: "polyanya" as const,
   initialized: false,
   autorouterProgress: 0,
   placementVersion: 0,
@@ -378,6 +381,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setAutorouterProgress: (progress) => set({ autorouterProgress: progress }),
   setComponentMargin: (margin) => set({ componentMargin: margin }),
   setDebugView: (view) => set({ debugView: view }),
+  setRouterType: (type) => set({ routerType: type }),
 
   randomizePlacements() {
     const s = get()

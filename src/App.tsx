@@ -4,6 +4,7 @@ import { renderFrame, type CanvasContext } from "./canvas/renderer"
 import { setupInputHandlers, type InputState } from "./interaction/inputManager"
 import { createCameraState } from "./interaction/camera"
 import { routeAllTraces, invalidateAllMeshes, buildDebugMesh, meshDebug } from "./pathfinding/meshManager"
+import { routeAllTracesRubberband } from "./pathfinding/rubberbandRouter"
 import { Toolbar } from "./ui/Toolbar"
 
 export function App() {
@@ -24,6 +25,7 @@ export function App() {
   const componentMargin = useAppStore((s) => s.componentMargin)
   const placementVersion = useAppStore((s) => s.placementVersion)
   const debugView = useAppStore((s) => s.debugView)
+  const routerType = useAppStore((s) => s.routerType)
 
   // Load circuit data
   useEffect(() => {
@@ -67,8 +69,14 @@ export function App() {
     function rerouteAll() {
       const s = useAppStore.getState()
       if (s.connections.length === 0) return
-      const { traces, unrouted } = routeAllTraces(s.board, s.components, s.placements, s.connections)
-      s.setRoutedTraces(traces, unrouted)
+      if (s.routerType === "rubberband") {
+        routeAllTracesRubberband(s.board, s.components, s.placements, s.connections).then(({ traces, unrouted }) => {
+          useAppStore.getState().setRoutedTraces(traces, unrouted)
+        })
+      } else {
+        const { traces, unrouted } = routeAllTraces(s.board, s.components, s.placements, s.connections)
+        s.setRoutedTraces(traces, unrouted)
+      }
     }
 
     cleanupRef.current = setupInputHandlers(
@@ -94,7 +102,8 @@ export function App() {
         const state = useAppStore.getState()
 
         // Live reroute ALL traces when a component is being dragged
-        if (state.dragState.componentId && state.routedTraces.size > 0) {
+        // (rubberband router is async, so skip live reroute — it reroutes on drag end)
+        if (state.dragState.componentId && state.routedTraces.size > 0 && state.routerType === "polyanya") {
           invalidateAllMeshes()
           isRouting = true
           const { traces, unrouted } = routeAllTraces(
@@ -141,37 +150,54 @@ export function App() {
     }
   }, [initialized])
 
-  // Auto-route when mode switches to "autorouting" — simplified single-pass Polyanya
+  // Auto-route when mode switches to "autorouting"
   useEffect(() => {
     if (mode !== "autorouting") return
 
     const state = useAppStore.getState()
     state.setAutorouterProgress(0.5)
 
-    // Simple single-pass: build pad-only mesh, route all traces
     const t0 = performance.now()
-    const { traces, unrouted } = routeAllTraces(
-      state.board,
-      state.components,
-      state.placements,
-      state.connections,
-    )
-    const elapsed = performance.now() - t0
 
-    state.setRoutedTraces(traces, unrouted)
-    state.setAutorouterProgress(0)
-    console.log(`[autorouter] ${traces.size} routed, ${unrouted.size} unrouted, ${elapsed.toFixed(0)}ms`)
-    state.setMode("interactive")
+    if (state.routerType === "rubberband") {
+      routeAllTracesRubberband(state.board, state.components, state.placements, state.connections).then(({ traces, unrouted }) => {
+        const elapsed = performance.now() - t0
+        const s = useAppStore.getState()
+        s.setRoutedTraces(traces, unrouted)
+        s.setAutorouterProgress(0)
+        console.log(`[autorouter:rubberband] ${traces.size} routed, ${unrouted.size} unrouted, ${elapsed.toFixed(0)}ms`)
+        s.setMode("interactive")
+      })
+    } else {
+      const { traces, unrouted } = routeAllTraces(
+        state.board,
+        state.components,
+        state.placements,
+        state.connections,
+      )
+      const elapsed = performance.now() - t0
+      state.setRoutedTraces(traces, unrouted)
+      state.setAutorouterProgress(0)
+      console.log(`[autorouter:polyanya] ${traces.size} routed, ${unrouted.size} unrouted, ${elapsed.toFixed(0)}ms`)
+      state.setMode("interactive")
+    }
   }, [mode])
 
-  // Reroute traces when placements change (repack/randomize)
+  // Reroute traces when placements change (repack/randomize) or router type changes
   useEffect(() => {
-    if (!initialized || placementVersion === 0) return
+    if (!initialized) return
+    // Skip on initial mount (placementVersion === 0) unless routerType changed
     const state = useAppStore.getState()
     if (state.connections.length === 0) return
-    const { traces, unrouted } = routeAllTraces(state.board, state.components, state.placements, state.connections)
-    state.setRoutedTraces(traces, unrouted)
-  }, [initialized, placementVersion])
+    if (state.routerType === "rubberband") {
+      routeAllTracesRubberband(state.board, state.components, state.placements, state.connections).then(({ traces, unrouted }) => {
+        useAppStore.getState().setRoutedTraces(traces, unrouted)
+      })
+    } else {
+      const { traces, unrouted } = routeAllTraces(state.board, state.components, state.placements, state.connections)
+      state.setRoutedTraces(traces, unrouted)
+    }
+  }, [initialized, placementVersion, routerType])
 
   // Rebuild debug mesh when debug view changes
   useEffect(() => {
