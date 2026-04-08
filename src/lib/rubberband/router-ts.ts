@@ -137,6 +137,37 @@ export class Router {
     this.obstaclePolygons.push({ vertices: boundaryVerts, clusterId });
   }
 
+  /**
+   * Insert a pad obstacle: boundary vertices form CDT constraints and interior
+   * edges get blocked via edgesInCluster, but boundary vertices are NOT
+   * penalized by Dijkstra (unlike insertPolygonObstacle which uses
+   * 'obstacle_boundary' name that triggers MBD penalty).
+   * This allows routes to pass alongside pads while not cutting through them.
+   */
+  insertPadObstacle(vertices: { x: number; y: number }[]): void {
+    if (vertices.length < 3) return;
+
+    const clusterId = this.nextObstacleClusterId++;
+
+    // Insert corner vertices only (no edge sampling — pads are small)
+    const boundaryVerts: Vertex[] = [];
+    for (const pt of vertices) {
+      const v = this.insertVertex('pad_boundary', pt.x, pt.y, 0, DEFAULT_CLEARANCE);
+      v.cid = clusterId;
+      boundaryVerts.push(v);
+    }
+
+    // Insert CDT constraints between consecutive boundary vertices
+    for (let i = 0; i < boundaryVerts.length; i++) {
+      const v1 = boundaryVerts[i];
+      const v2 = boundaryVerts[(i + 1) % boundaryVerts.length];
+      this.cdt.insertConstraint(v1, v2);
+    }
+
+    // Store for marking interior edges after triangulation
+    this.obstaclePolygons.push({ vertices: boundaryVerts, clusterId });
+  }
+
   generateTestVertices(count: number): void {
     const size = Math.max(this.b2x - this.b1x, this.b2y - this.b1y);
     const cs = 3 * DEFAULT_PIN_RADIUS;

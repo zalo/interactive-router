@@ -119,7 +119,8 @@ export function App() {
         }
 
         // Debug mesh piggybacks on routeAllTraces; only build separately if needed
-        if (state.debugView !== "normal" && meshDebug.lastObstaclePolygons.length === 0) {
+        // (rubberband populates meshDebug itself via exportRubberbandDebug)
+        if (state.debugView !== "normal" && meshDebug.lastObstaclePolygons.length === 0 && state.routerType !== "rubberband") {
           buildDebugMesh("top", state.board, state.components, state.placements, state.routedTraces)
         }
 

@@ -9,6 +9,7 @@
 import { Router, Vertex, NetDesc, DEFAULT_CLEARANCE } from "../lib/rubberband/index.ts"
 import type { BoardData, ComponentData, PlacementState, ConnectionData, RoutedTrace, Point } from "../types"
 import { getWorldPadPosition } from "../state/store"
+import { meshDebug } from "./meshManager"
 
 const MM_TO_UNITS = 39370.079  // 1 mm in router units (0.01 mil)
 const UNITS_TO_MM = 1 / MM_TO_UNITS
@@ -52,14 +53,20 @@ export async function routeAllTracesRubberband(
   // Insert border vertices
   router.insertBorder()
 
-  // Insert pad vertices — the rubberband router handles clearance via vertex
-  // radii and cut capacities, not via polygon obstacles. Polygon obstacles
-  // are for keepout zones, not pads.
+  // Insert pad vertices with their bounding boxes as CDT obstacles.
+  // Each pad gets a pin vertex at its center (for routing to/from) and a
+  // rectangular polygon obstacle so Dijkstra can't cut through pad copper.
+  // The obstacle uses edgesInCluster to block interior CDT edges while
+  // still allowing routes to reach the pin vertex itself.
   const padVertexMap = new Map<string, Vertex>()  // padId -> Vertex
 
   for (const [compId, comp] of components) {
     const placement = placements.get(compId)
     if (!placement) continue
+
+    const rad = (placement.rotation * Math.PI) / 180
+    const cosR = Math.cos(rad)
+    const sinR = Math.sin(rad)
 
     for (const pad of comp.pads) {
       const worldPos = getWorldPadPosition(components, placements, compId, pad.id)
@@ -69,17 +76,33 @@ export async function routeAllTracesRubberband(
       const uy = worldPos.y * MM_TO_UNITS
       const name = `${compId}:${pad.id}`
 
-      // Use pad half-diagonal as pin radius so clearance reflects actual pad size
+      // Pin radius = half the smaller pad dimension (conservative)
       const pw = (pad.width || 0.5) * MM_TO_UNITS
       const ph = (pad.height || 0.5) * MM_TO_UNITS
-      const padRadius = Math.hypot(pw, ph) / 2
+      const padRadius = Math.min(pw, ph) / 2
 
       const v = router.insertVertex(name, ux, uy, padRadius, CLEARANCE)
       padVertexMap.set(pad.id, v)
+
+      // Insert pad bounding box as a polygon obstacle in the CDT.
+      // The pin vertex sits at the center; Dijkstra can reach it but
+      // can't traverse through the pad's interior edges.
+      const hw = pw / 2
+      const hh = ph / 2
+      const corners = [
+        { x: -hw, y: -hh }, { x: hw, y: -hh },
+        { x: hw, y: hh }, { x: -hw, y: hh },
+      ]
+      // Rotate corners by component rotation and translate to world pos
+      const worldCorners = corners.map(c => ({
+        x: ux + c.x * cosR - c.y * sinR,
+        y: uy + c.x * sinR + c.y * cosR,
+      }))
+      router.insertPadObstacle(worldCorners)
     }
   }
 
-  console.log(`[rubberband] ${padVertexMap.size} pads inserted`)
+  console.log(`[rubberband] ${padVertexMap.size} pads inserted (with obstacle boxes)`)
 
   // Build netlist from connections (expand multi-endpoint via MST pairs)
   const connNetIds = new Map<string, number[]>()  // connectionId -> netlist indices
@@ -129,6 +152,10 @@ export async function routeAllTracesRubberband(
 
   // Triangulate and initialize
   await router.finishInit()
+
+  // Export CDT edges to meshDebug for debug visualization
+  exportRubberbandDebug(router)
+
   console.log(`[rubberband] CDT: ${router.getVertices().length} vertices, ${router.getRegions().length} regions`)
 
   // Route each net, tracking which pathId maps to which netlist index.
@@ -287,4 +314,84 @@ function expandToPointPairs(
     })
   }
   return pairs
+}
+
+/**
+ * Export rubberband CDT edges and obstacle polygons into meshDebug
+ * so the existing debug overlay renders them.
+ */
+function exportRubberbandDebug(router: Router) {
+  const verts = router.getVertices()
+
+  // Build CDT edges as triangles for meshDebug.lastMeshPolygons
+  // Each CDT edge becomes a thin "polygon" (line) for the mesh overlay
+  const edgePolys: Array<{ vertices: { x: number; y: number }[]; blocked: boolean; obstacleIndex: number }> = []
+  const seen = new Set<string>()
+
+  for (const v of verts) {
+    if (v.name === 'border') continue
+    for (const nb of v.neighbors) {
+      if (nb.name === 'border') continue
+      const key = v.id < nb.id ? `${v.id}_${nb.id}` : `${nb.id}_${v.id}`
+      if (seen.has(key)) continue
+      seen.add(key)
+
+      const x1 = v.x * UNITS_TO_MM
+      const y1 = v.y * UNITS_TO_MM
+      const x2 = nb.x * UNITS_TO_MM
+      const y2 = nb.y * UNITS_TO_MM
+
+      // Check if this is a blocked edge (both vertices in same obstacle cluster)
+      const blocked = v.cid >= 0 && v.cid === nb.cid
+
+      // Create a thin triangle so the mesh renderer can draw it
+      const dx = x2 - x1, dy = y2 - y1
+      const len = Math.hypot(dx, dy)
+      if (len < 1e-9) continue
+      const nx = -dy / len * 0.01, ny = dx / len * 0.01
+      edgePolys.push({
+        vertices: [
+          { x: x1, y: y1 },
+          { x: x2, y: y2 },
+          { x: (x1 + x2) / 2 + nx, y: (y1 + y2) / 2 + ny },
+        ],
+        blocked,
+        obstacleIndex: blocked ? 1 : -1,
+      })
+    }
+  }
+
+  // Build obstacle polygons for the obstacle debug overlay:
+  // Show pin vertices as small octagons and pad boundary rectangles
+  const obstaclePolys: Array<{ x: number; y: number }[]> = []
+
+  // Pin vertex octagons
+  for (const v of verts) {
+    if (v.name === 'border' || v.name === 'obstacle_boundary' || v.name === 'pad_boundary') continue
+    if (v.core <= 0) continue
+    const r = v.core * UNITS_TO_MM
+    const cx = v.x * UNITS_TO_MM
+    const cy = v.y * UNITS_TO_MM
+    const pts: { x: number; y: number }[] = []
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2
+      pts.push({ x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) })
+    }
+    obstaclePolys.push(pts)
+  }
+
+  // Pad boundary rectangles — reconstruct from boundary vertices grouped by cid
+  const cidGroups = new Map<number, { x: number; y: number }[]>()
+  for (const v of verts) {
+    if (v.name !== 'pad_boundary' || v.cid < 0) continue
+    let group = cidGroups.get(v.cid)
+    if (!group) { group = []; cidGroups.set(v.cid, group) }
+    group.push({ x: v.x * UNITS_TO_MM, y: v.y * UNITS_TO_MM })
+  }
+  for (const pts of cidGroups.values()) {
+    if (pts.length >= 3) obstaclePolys.push(pts)
+  }
+
+  meshDebug.lastMeshPolygons = edgePolys
+  meshDebug.lastObstaclePolygons = obstaclePolys
 }
