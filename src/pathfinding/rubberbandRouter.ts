@@ -35,6 +35,8 @@ export async function routeAllTracesRubberband(
 
   if (connections.length === 0) return { traces, unrouted }
 
+  const t0 = performance.now()
+
   const halfW = board.width / 2
   const halfH = board.height / 2
   const b1x = (-halfW) * MM_TO_UNITS
@@ -85,9 +87,14 @@ export async function routeAllTracesRubberband(
   }
 
   // Merge overlapping pad boxes into obstacle polygons and insert them
-  const mergedObstacles = mergeBoxes(padBoxes)
-  for (const poly of mergedObstacles) {
-    router.insertPolygonObstacle(poly)
+  try {
+    const mergedObstacles = mergeBoxes(padBoxes)
+    for (const poly of mergedObstacles) {
+      router.insertPolygonObstacle(poly)
+    }
+    console.log(`[rubberband] ${padVertexMap.size} pads, ${mergedObstacles.length} merged obstacles`)
+  } catch (e) {
+    console.warn(`[rubberband] mergeBoxes failed, continuing without obstacles:`, e)
   }
 
   // Build netlist from connections (expand multi-endpoint via MST pairs)
@@ -106,7 +113,10 @@ export async function routeAllTracesRubberband(
     for (const pair of epPairs) {
       const v1 = padVertexMap.get(pair.ep1.padId)
       const v2 = padVertexMap.get(pair.ep2.padId)
-      if (!v1 || !v2) continue
+      if (!v1 || !v2) {
+        console.warn(`[rubberband] missing vertex for pair ${pair.connId}: ep1=${pair.ep1.padId}(${!!v1}) ep2=${pair.ep2.padId}(${!!v2})`)
+        continue
+      }
 
       const idx = netConnMap.length
       netConnMap.push({
@@ -120,6 +130,8 @@ export async function routeAllTracesRubberband(
     connNetIds.set(conn.id, netIndices)
   }
 
+  console.log(`[rubberband] ${netConnMap.length} net pairs from ${connections.length} connections`)
+
   // Generate the netlist
   router.generateNetlist(
     netConnMap.map(nc => ({
@@ -129,13 +141,11 @@ export async function routeAllTracesRubberband(
       traceClearance: CLEARANCE,
     }))
   )
-  // sortNetlist needs priorities — but generateNetlist can't compute them
-  // because this.vertices is empty before finishInit(). Sort manually.
-  // (sortNetlist sorts by pri ascending = shortest first)
   router.sortNetlist()
 
   // Triangulate and initialize
   await router.finishInit()
+  console.log(`[rubberband] CDT: ${router.getVertices().length} vertices, ${router.getRegions().length} regions`)
 
   // Route each net, tracking which pathId maps to which netlist index.
   // router.route() increments an internal pathId only on success, and
@@ -150,6 +160,8 @@ export async function routeAllTracesRubberband(
     }
   }
 
+  console.log(`[rubberband] routing: ${nextPathId}/${router.netlist.length} succeeded`)
+
   // Rubberband optimization passes
   router.sortAttachedNets()
   router.prepareSteps()
@@ -158,6 +170,8 @@ export async function routeAllTracesRubberband(
   router.prepareSteps()
   router.fixCrossingPairs()
   router.generateDrawnSegments()
+
+  console.log(`[rubberband] ${router.drawnSegments.length} drawn segments`)
 
   // Convert drawn segments to RoutedTraces.
   // seg.netId is a pathId (0-based, success-only counter), NOT NetDesc.id.
@@ -172,12 +186,17 @@ export async function routeAllTracesRubberband(
     arr.push(seg)
   }
 
+  console.log(`[rubberband] segments grouped into ${segsByPathId.size} pathIds, mapping ${pathIdToNetIdx.size} pathIds to netlist`)
+
   // Map pathId → netlist index → netConnMap entry → RoutedTrace
   for (const [pathId, ni] of pathIdToNetIdx) {
     const net = router.netlist[ni]
     // Find the netConnMap entry matching this net's terminals
     const ncIdx = netConnMap.findIndex(nc => nc.ep1Key === net.t1Name && nc.ep2Key === net.t2Name)
-    if (ncIdx < 0) continue
+    if (ncIdx < 0) {
+      console.warn(`[rubberband] no netConnMap match for pathId=${pathId} ni=${ni} t1="${net.t1Name}" t2="${net.t2Name}"`)
+      continue
+    }
 
     const nc = netConnMap[ncIdx]
     const segs = segsByPathId.get(pathId)
@@ -232,6 +251,7 @@ export async function routeAllTracesRubberband(
     if (!anyRouted) unrouted.add(conn.id)
   }
 
+  console.log(`[rubberband] final: ${traces.size} traces, ${unrouted.size} unrouted, ${(performance.now() - t0).toFixed(0)}ms`)
   return { traces, unrouted }
 }
 

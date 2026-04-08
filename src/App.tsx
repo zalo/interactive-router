@@ -72,7 +72,7 @@ export function App() {
       if (s.routerType === "rubberband") {
         routeAllTracesRubberband(s.board, s.components, s.placements, s.connections).then(({ traces, unrouted }) => {
           useAppStore.getState().setRoutedTraces(traces, unrouted)
-        })
+        }).catch(e => console.error("[rubberband] rerouteAll failed:", e))
       } else {
         const { traces, unrouted } = routeAllTraces(s.board, s.components, s.placements, s.connections)
         s.setRoutedTraces(traces, unrouted)
@@ -167,7 +167,7 @@ export function App() {
         s.setAutorouterProgress(0)
         console.log(`[autorouter:rubberband] ${traces.size} routed, ${unrouted.size} unrouted, ${elapsed.toFixed(0)}ms`)
         s.setMode("interactive")
-      })
+      }).catch(e => console.error("[rubberband] autoroute failed:", e))
     } else {
       const { traces, unrouted } = routeAllTraces(
         state.board,
@@ -192,7 +192,7 @@ export function App() {
     if (state.routerType === "rubberband") {
       routeAllTracesRubberband(state.board, state.components, state.placements, state.connections).then(({ traces, unrouted }) => {
         useAppStore.getState().setRoutedTraces(traces, unrouted)
-      })
+      }).catch(e => console.error("[rubberband] reroute failed:", e))
     } else {
       const { traces, unrouted } = routeAllTraces(state.board, state.components, state.placements, state.connections)
       state.setRoutedTraces(traces, unrouted)
