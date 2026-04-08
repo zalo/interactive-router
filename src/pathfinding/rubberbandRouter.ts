@@ -7,7 +7,6 @@
  */
 
 import { Router, Vertex, NetDesc, DEFAULT_CLEARANCE } from "../lib/rubberband/index.ts"
-import { mergeBoxes, projectPointOutOfPolygons, type BoxObstacle } from "../lib/rubberband/index.ts"
 import type { BoardData, ComponentData, PlacementState, ConnectionData, RoutedTrace, Point } from "../types"
 import { getWorldPadPosition } from "../state/store"
 
@@ -53,10 +52,9 @@ export async function routeAllTracesRubberband(
   // Insert border vertices
   router.insertBorder()
 
-  // Collect all pad obstacles for merging
-  const padBoxes: BoxObstacle[] = []
-
-  // Insert pad vertices and collect obstacle boxes
+  // Insert pad vertices — the rubberband router handles clearance via vertex
+  // radii and cut capacities, not via polygon obstacles. Polygon obstacles
+  // are for keepout zones, not pads.
   const padVertexMap = new Map<string, Vertex>()  // padId -> Vertex
 
   for (const [compId, comp] of components) {
@@ -71,31 +69,17 @@ export async function routeAllTracesRubberband(
       const uy = worldPos.y * MM_TO_UNITS
       const name = `${compId}:${pad.id}`
 
-      const v = router.insertVertex(name, ux, uy, PIN_RADIUS, CLEARANCE)
-      padVertexMap.set(pad.id, v)
-
-      // Add pad as obstacle box for merging
+      // Use pad half-diagonal as pin radius so clearance reflects actual pad size
       const pw = (pad.width || 0.5) * MM_TO_UNITS
       const ph = (pad.height || 0.5) * MM_TO_UNITS
-      padBoxes.push({
-        x: ux - pw / 2,
-        y: uy - ph / 2,
-        w: pw,
-        h: ph,
-      })
+      const padRadius = Math.hypot(pw, ph) / 2
+
+      const v = router.insertVertex(name, ux, uy, padRadius, CLEARANCE)
+      padVertexMap.set(pad.id, v)
     }
   }
 
-  // Merge overlapping pad boxes into obstacle polygons and insert them
-  try {
-    const mergedObstacles = mergeBoxes(padBoxes)
-    for (const poly of mergedObstacles) {
-      router.insertPolygonObstacle(poly)
-    }
-    console.log(`[rubberband] ${padVertexMap.size} pads, ${mergedObstacles.length} merged obstacles`)
-  } catch (e) {
-    console.warn(`[rubberband] mergeBoxes failed, continuing without obstacles:`, e)
-  }
+  console.log(`[rubberband] ${padVertexMap.size} pads inserted`)
 
   // Build netlist from connections (expand multi-endpoint via MST pairs)
   const connNetIds = new Map<string, number[]>()  // connectionId -> netlist indices
