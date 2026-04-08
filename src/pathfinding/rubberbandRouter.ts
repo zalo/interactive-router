@@ -129,14 +129,25 @@ export async function routeAllTracesRubberband(
       traceClearance: CLEARANCE,
     }))
   )
+  // sortNetlist needs priorities — but generateNetlist can't compute them
+  // because this.vertices is empty before finishInit(). Sort manually.
+  // (sortNetlist sorts by pri ascending = shortest first)
   router.sortNetlist()
 
   // Triangulate and initialize
   await router.finishInit()
 
-  // Route each net
+  // Route each net, tracking which pathId maps to which netlist index.
+  // router.route() increments an internal pathId only on success, and
+  // DrawnSegment.netId is set to Step.id which equals that pathId.
+  const pathIdToNetIdx = new Map<number, number>()
+  let nextPathId = 0
   for (let i = 0; i < router.netlist.length; i++) {
-    router.route(i)
+    const success = router.route(i)
+    if (success) {
+      pathIdToNetIdx.set(nextPathId, i)
+      nextPathId++
+    }
   }
 
   // Rubberband optimization passes
@@ -148,27 +159,28 @@ export async function routeAllTracesRubberband(
   router.fixCrossingPairs()
   router.generateDrawnSegments()
 
-  // Convert drawn segments to RoutedTraces
-  // Group segments by netId, then map netId back to connectionId
-  const segsByNet = new Map<number, typeof router.drawnSegments>()
+  // Convert drawn segments to RoutedTraces.
+  // seg.netId is a pathId (0-based, success-only counter), NOT NetDesc.id.
+  // Use pathIdToNetIdx to map back to the netlist index.
+  const segsByPathId = new Map<number, typeof router.drawnSegments>()
   for (const seg of router.drawnSegments) {
-    let arr = segsByNet.get(seg.netId)
+    let arr = segsByPathId.get(seg.netId)
     if (!arr) {
       arr = []
-      segsByNet.set(seg.netId, arr)
+      segsByPathId.set(seg.netId, arr)
     }
     arr.push(seg)
   }
 
-  // Map netlist index -> connection info
-  for (let ni = 0; ni < router.netlist.length; ni++) {
+  // Map pathId → netlist index → netConnMap entry → RoutedTrace
+  for (const [pathId, ni] of pathIdToNetIdx) {
     const net = router.netlist[ni]
     // Find the netConnMap entry matching this net's terminals
     const ncIdx = netConnMap.findIndex(nc => nc.ep1Key === net.t1Name && nc.ep2Key === net.t2Name)
     if (ncIdx < 0) continue
 
     const nc = netConnMap[ncIdx]
-    const segs = segsByNet.get(net.id)
+    const segs = segsByPathId.get(pathId)
 
     if (!segs || segs.length === 0) {
       unrouted.add(nc.connId)
